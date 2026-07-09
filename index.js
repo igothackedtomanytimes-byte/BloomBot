@@ -19,10 +19,7 @@ const {
   Routes
 } = require("discord.js");
 
-// =======================
-// RENDER WEB SERVER
-// =======================
-
+// WEB SERVER FOR RENDER
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -34,38 +31,28 @@ app.listen(PORT, () => {
   console.log(`🌐 Web server running on port ${PORT}`);
 });
 
-// =======================
 // ENV
-// =======================
-
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
-// =======================
 // IDS
-// =======================
-
 const OWNER_ID = "1442212943470264320";
 
 const BUYER_CATEGORY_ID = "1524567770002489584";
 const MM_CATEGORY_ID = "1524570656291688652";
+const APPLICATION_CATEGORY_OR_CHANNEL_ID = "1524639852128374825";
 
 const NEW_MM_ROLE_ID = "1523782888296939660";
 const MM_ROLE_ID = "1516085004801802260";
 const TRUSTED_MM_ROLE_ID = "1523783007842992238";
 const SELLER_ROLE_ID = "1516085109378252810";
+const REVIEW_ROLE_ID = "1516084407528722604";
 
 const BUYER_VOUCH_CHANNEL_ID = "1516081257547825232";
 const MM_VOUCH_CHANNEL_ID = "1523533160506327090";
 
-const MM_APPLY_CATEGORY_OR_CHANNEL_ID = "1524639852128374825";
-const MM_REVIEW_ROLE_ID = "1516084407528722604";
-
-// =======================
 // CLIENT
-// =======================
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -75,34 +62,32 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// =======================
 // TEMP DATABASE
-// =======================
-// This resets if bot restarts. Later we can add JSON/database save.
-
+// This resets when bot restarts. Later we can make it save to JSON.
 const ticketClaims = new Map();
+// channelId -> { userId, type }
+
 const vouchCompletedTickets = new Set();
-const mmApplications = new Map();
+
+const applications = new Map();
+// userId -> application part 1 data
 
 const storeCredits = new Map();
 // userId -> number
 
 const discountCodes = new Map();
 /*
-code -> {
+CODE -> {
   code,
   type: "percent" | "dollar",
-  amount: number,
-  maxUses: number,
-  used: number,
-  createdBy: string
+  amount,
+  maxUses,
+  used,
+  createdBy
 }
 */
 
-// =======================
 // PRICE LIST
-// =======================
-
 const priceList = {
   seeds: {
     "20x Mega Seed": 1,
@@ -134,10 +119,7 @@ const priceList = {
   }
 };
 
-// =======================
 // HELPERS
-// =======================
-
 function isOwner(userId) {
   return userId === OWNER_ID;
 }
@@ -160,10 +142,10 @@ function isMMTicket(channel) {
   return channel?.parentId === MM_CATEGORY_ID;
 }
 
-function isMMApplyTicket(channel) {
+function isApplicationTicket(channel) {
   return (
-    channel?.id === MM_APPLY_CATEGORY_OR_CHANNEL_ID ||
-    channel?.parentId === MM_APPLY_CATEGORY_OR_CHANNEL_ID
+    channel?.id === APPLICATION_CATEGORY_OR_CHANNEL_ID ||
+    channel?.parentId === APPLICATION_CATEGORY_OR_CHANNEL_ID
   );
 }
 
@@ -182,15 +164,25 @@ function staffOrOwner(interaction) {
   return isOwner(interaction.user.id) || onlyStaff(interaction.member);
 }
 
-function denyFunny() {
-  const replies = [
-    "💀 Nice try lil bro. Staff only.",
-    "🚫 Access denied. You are not him.",
-    "😭 Bro tried to use staff powers with a guest pass.",
-    "🛡️ Nope. This button is not for you."
-  ];
+function sellerOrOwner(interaction) {
+  return isOwner(interaction.user.id) || interaction.member.roles.cache.has(SELLER_ROLE_ID);
+}
 
-  return replies[Math.floor(Math.random() * replies.length)];
+function mmOrOwner(interaction) {
+  return (
+    isOwner(interaction.user.id) ||
+    interaction.member.roles.cache.has(NEW_MM_ROLE_ID) ||
+    interaction.member.roles.cache.has(MM_ROLE_ID) ||
+    interaction.member.roles.cache.has(TRUSTED_MM_ROLE_ID)
+  );
+}
+
+function deny() {
+  return "🚫 You do not have permission to use this.";
+}
+
+function ownerDeny() {
+  return "👑 Only the server owner can use this command.";
 }
 
 function premiumEmbed(title, description, color = 0x2ecc71) {
@@ -199,7 +191,7 @@ function premiumEmbed(title, description, color = 0x2ecc71) {
     .setDescription(description)
     .setColor(color)
     .setTimestamp()
-    .setFooter({ text: "Bloom Bot • Ticket Assistant" });
+    .setFooter({ text: "Bloom Bot • Premium Ticket System" });
 }
 
 async function addUserToTicket(channel, userId) {
@@ -211,7 +203,6 @@ async function addUserToTicket(channel, userId) {
       AttachFiles: true,
       EmbedLinks: true
     });
-
     return true;
   } catch (err) {
     console.log("Add user failed:", err.message);
@@ -219,45 +210,50 @@ async function addUserToTicket(channel, userId) {
   }
 }
 
-// =======================
-// STORE CREDIT
-// =======================
+function getClaim(channelId) {
+  return ticketClaims.get(channelId) || null;
+}
 
+function setClaim(channelId, userId, type) {
+  ticketClaims.set(channelId, { userId, type });
+}
+
+function hasClaim(channelId) {
+  return ticketClaims.has(channelId);
+}
+
+// STORE CREDIT
 function getCredit(userId) {
   return Number(storeCredits.get(userId) || 0);
 }
 
 function addCredit(userId, amount) {
-  const current = getCredit(userId);
-  const next = current + Number(amount || 0);
+  const next = getCredit(userId) + Number(amount || 0);
   storeCredits.set(userId, Math.max(0, next));
   return getCredit(userId);
 }
 
 function removeCredit(userId, amount) {
-  const current = getCredit(userId);
-  const next = current - Number(amount || 0);
+  const next = getCredit(userId) - Number(amount || 0);
   storeCredits.set(userId, Math.max(0, next));
   return getCredit(userId);
 }
 
-// =======================
 // DISCOUNT CODES
-// =======================
-
 function createDiscountCode(code, type, amount, maxUses, createdBy) {
   const cleanCode = code.toUpperCase().trim();
 
-  discountCodes.set(cleanCode, {
+  const data = {
     code: cleanCode,
     type,
     amount: Number(amount),
     maxUses: Number(maxUses),
     used: 0,
     createdBy
-  });
+  };
 
-  return discountCodes.get(cleanCode);
+  discountCodes.set(cleanCode, data);
+  return data;
 }
 
 function getDiscountCode(code) {
@@ -274,8 +270,7 @@ function calculateDiscount(total, codeData) {
   if (!codeData || !canUseDiscount(codeData)) {
     return {
       discountAmount: 0,
-      finalAfterDiscount: total,
-      discountText: "No discount"
+      text: "No discount"
     };
   }
 
@@ -293,53 +288,47 @@ function calculateDiscount(total, codeData) {
 
   return {
     discountAmount,
-    finalAfterDiscount: Math.max(0, total - discountAmount),
-    discountText:
-      codeData.type === "percent"
-        ? `${codeData.amount}% off`
-        : `${money(codeData.amount)} off`
+    text: codeData.type === "percent"
+      ? `${codeData.amount}% off`
+      : `${money(codeData.amount)} off`
   };
 }
 
-function calculateFinalTotal({ price, quantity, discountCode, buyerId, useCredit }) {
-  const originalTotal = price !== null && price !== undefined ? Number(price) * Number(quantity) : null;
-
-  if (originalTotal === null) {
+function calculateOrderTotal({ price, quantity, discountCode, buyerId, useCredit }) {
+  if (price === null || price === undefined) {
     return {
       originalTotal: null,
       discountAmount: 0,
       creditUsed: 0,
       finalTotal: null,
-      discountText: "Seller will price this item"
+      codeData: null,
+      discountText: "Custom item — seller will price it"
     };
   }
 
+  const originalTotal = Number(price) * Number(quantity);
   const codeData = getDiscountCode(discountCode);
   const discount = calculateDiscount(originalTotal, codeData);
 
+  let afterDiscount = Math.max(0, originalTotal - discount.discountAmount);
   let creditUsed = 0;
-  let finalTotal = discount.finalAfterDiscount;
 
   if (useCredit) {
-    const availableCredit = getCredit(buyerId);
-    creditUsed = Math.min(availableCredit, finalTotal);
-    finalTotal = Math.max(0, finalTotal - creditUsed);
+    creditUsed = Math.min(getCredit(buyerId), afterDiscount);
+    afterDiscount = Math.max(0, afterDiscount - creditUsed);
   }
 
   return {
     originalTotal,
     discountAmount: discount.discountAmount,
     creditUsed,
-    finalTotal,
-    discountText: discount.discountText,
-    codeData
+    finalTotal: afterDiscount,
+    codeData,
+    discountText: discount.text
   };
 }
 
-// =======================
-// DISCOUNT CREATE MODAL
-// =======================
-
+// DISCOUNT MODAL
 async function discountCreateModal(interaction) {
   const modal = new ModalBuilder()
     .setCustomId("discount_create_modal")
@@ -349,7 +338,7 @@ async function discountCreateModal(interaction) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("code")
-        .setLabel("Discount code")
+        .setLabel("Discount Code")
         .setPlaceholder("Example: SAVE10")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
@@ -366,7 +355,7 @@ async function discountCreateModal(interaction) {
       new TextInputBuilder()
         .setCustomId("amount")
         .setLabel("Amount")
-        .setPlaceholder("Example: 10 for 10% or 2 for $2 off")
+        .setPlaceholder("10 = 10% or $10 depending on type")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
@@ -383,22 +372,22 @@ async function discountCreateModal(interaction) {
   return interaction.showModal(modal);
 }
 // =======================
-// BUYER TICKET SYSTEM
+// BUYER SYSTEM
 // =======================
 
 function buyerPanel() {
   const embed = premiumEmbed(
-    "🛒 Purchase Assistant",
+    "🛒 Purchase Ticket",
     [
       "Welcome to your purchase ticket.",
       "",
-      "Click **Start Order** and answer the questions.",
-      "A seller will claim your order and help you finish.",
+      "Click **Start Order** and Bloom Bot will guide you step by step.",
       "",
-      "✅ Prices are calculated automatically when possible",
-      "✅ Discount codes supported",
-      "✅ Store credit supported",
-      "✅ Vouch required after delivery"
+      "✅ Clear order form",
+      "✅ Auto prices",
+      "✅ Discount codes",
+      "✅ Store credit",
+      "✅ Required vouch after delivery"
     ].join("\n"),
     0x2ecc71
   );
@@ -417,7 +406,7 @@ function buyerPanel() {
 async function buyerCategoryMenu(interaction) {
   const menu = new StringSelectMenuBuilder()
     .setCustomId("buyer_category")
-    .setPlaceholder("Choose what you want to buy")
+    .setPlaceholder("Choose a category")
     .addOptions(
       { label: "Seeds", value: "seeds", emoji: "🌱" },
       { label: "Gear", value: "gear", emoji: "🛠️" },
@@ -433,7 +422,9 @@ async function buyerCategoryMenu(interaction) {
 }
 
 async function buyerItemMenu(interaction, category) {
-  if (category === "other") return buyerCustomOrderModal(interaction, "other", "Custom Item", null);
+  if (category === "other") {
+    return buyerOrderModal(interaction, "other", "Custom Item", null);
+  }
 
   const options = Object.entries(priceList[category]).map(([name, price]) => ({
     label: name,
@@ -459,7 +450,7 @@ async function buyerItemMenu(interaction, category) {
   });
 }
 
-async function buyerCustomOrderModal(interaction, category, itemName, itemPrice) {
+async function buyerOrderModal(interaction, category, itemName, itemPrice) {
   const encodedItem = Buffer.from(itemName || "Custom Item").toString("base64");
   const encodedPrice = itemPrice === null || itemPrice === undefined ? "custom" : String(itemPrice);
 
@@ -467,10 +458,10 @@ async function buyerCustomOrderModal(interaction, category, itemName, itemPrice)
     .setCustomId(`buyer_order_${category}_${encodedPrice}_${encodedItem}`)
     .setTitle("Order Details");
 
-  const components = [];
+  const rows = [];
 
   if (itemName === "Custom Item") {
-    components.push(
+    rows.push(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("custom_item")
@@ -482,7 +473,7 @@ async function buyerCustomOrderModal(interaction, category, itemName, itemPrice)
     );
   }
 
-  components.push(
+  rows.push(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("amount")
@@ -493,7 +484,7 @@ async function buyerCustomOrderModal(interaction, category, itemName, itemPrice)
     )
   );
 
-  components.push(
+  rows.push(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("payment")
@@ -504,7 +495,7 @@ async function buyerCustomOrderModal(interaction, category, itemName, itemPrice)
     )
   );
 
-  components.push(
+  rows.push(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("discount")
@@ -515,7 +506,7 @@ async function buyerCustomOrderModal(interaction, category, itemName, itemPrice)
     )
   );
 
-  components.push(
+  rows.push(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("credit")
@@ -526,7 +517,7 @@ async function buyerCustomOrderModal(interaction, category, itemName, itemPrice)
     )
   );
 
-  modal.addComponents(...components.slice(0, 5));
+  modal.addComponents(...rows.slice(0, 5));
   return interaction.showModal(modal);
 }
 
@@ -537,16 +528,19 @@ function orderButtons() {
       .setLabel("Claim Order")
       .setEmoji("🙋")
       .setStyle(ButtonStyle.Primary),
+
     new ButtonBuilder()
       .setCustomId("order_paid")
       .setLabel("Payment Received")
       .setEmoji("💳")
       .setStyle(ButtonStyle.Success),
+
     new ButtonBuilder()
       .setCustomId("order_done")
       .setLabel("Delivered")
       .setEmoji("📦")
       .setStyle(ButtonStyle.Success),
+
     new ButtonBuilder()
       .setCustomId("order_cancel")
       .setLabel("Cancel")
@@ -558,7 +552,7 @@ function orderButtons() {
 async function sendOrderSummary(interaction, data) {
   const orderId = Math.floor(100000 + Math.random() * 900000);
 
-  const calc = calculateFinalTotal({
+  const calc = calculateOrderTotal({
     price: data.price,
     quantity: data.amount,
     discountCode: data.discountCode,
@@ -574,17 +568,16 @@ async function sendOrderSummary(interaction, data) {
     removeCredit(interaction.user.id, calc.creditUsed);
   }
 
-  let priceBlock = "Seller will provide price.";
+  let priceText = "Seller will provide price for this custom item.";
+
   if (calc.originalTotal !== null) {
-    priceBlock = [
+    priceText = [
       `Original Total: **${money(calc.originalTotal)}**`,
-      `Discount: **-${money(calc.discountAmount)}** ${data.discountCode ? `(${data.discountCode.toUpperCase()})` : ""}`,
+      `Discount: **-${money(calc.discountAmount)}**`,
       `Store Credit Used: **-${money(calc.creditUsed)}**`,
       `Final Total: **${money(calc.finalTotal)}**`
     ].join("\n");
   }
-
-  const creditLeft = getCredit(interaction.user.id);
 
   const embed = premiumEmbed(
     `🛒 Order #${orderId}`,
@@ -595,9 +588,9 @@ async function sendOrderSummary(interaction, data) {
     { name: "📦 Category", value: data.category, inline: true },
     { name: "🛍️ Item", value: data.item, inline: true },
     { name: "🔢 Amount", value: String(data.amount), inline: true },
-    { name: "💰 Price", value: priceBlock, inline: false },
+    { name: "💰 Price", value: priceText, inline: false },
     { name: "🎟️ Discount Code", value: data.discountCode || "None", inline: true },
-    { name: "🏦 Store Credit Left", value: money(creditLeft), inline: true },
+    { name: "🏦 Store Credit Left", value: money(getCredit(interaction.user.id)), inline: true },
     { name: "💳 Payment", value: data.payment, inline: false },
     { name: "📌 Status", value: "🟡 Waiting for Seller", inline: false }
   );
@@ -615,12 +608,12 @@ async function sendOrderSummary(interaction, data) {
 }
 
 // =======================
-// MM TICKET SYSTEM
+// MM SYSTEM
 // =======================
 
 function mmPanel() {
   const embed = premiumEmbed(
-    "🛡️ Middleman Assistant",
+    "🛡️ Middleman Ticket",
     [
       "Welcome to your MM ticket.",
       "",
@@ -628,10 +621,10 @@ function mmPanel() {
       "",
       "✅ Select the other trader",
       "✅ Bot adds them to this ticket",
-      "✅ Choose trade size",
-      "✅ Correct MM role gets pinged",
-      "✅ Claim system prevents MM fighting",
-      "✅ Vouch required after trade"
+      "✅ Trade size system",
+      "✅ Claim lock so MMs do not fight",
+      "✅ MM payment needed button",
+      "✅ Required vouch after trade"
     ].join("\n"),
     0x5865f2
   );
@@ -708,16 +701,25 @@ function mmButtons() {
       .setLabel("Claim MM")
       .setEmoji("🛡️")
       .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId("mm_payment_needed")
+      .setLabel("Payment Needed")
+      .setEmoji("💵")
+      .setStyle(ButtonStyle.Secondary),
+
     new ButtonBuilder()
       .setCustomId("mm_confirmed")
       .setLabel("Both Confirmed")
       .setEmoji("✅")
       .setStyle(ButtonStyle.Success),
+
     new ButtonBuilder()
       .setCustomId("mm_done")
       .setLabel("Trade Complete")
       .setEmoji("📦")
       .setStyle(ButtonStyle.Success),
+
     new ButtonBuilder()
       .setCustomId("mm_cancel")
       .setLabel("Cancel")
@@ -772,8 +774,51 @@ async function sendMMSummary(interaction, data) {
     ephemeral: true
   });
 }
+
+async function mmPaymentModal(interaction) {
+  const claim = getClaim(interaction.channel.id);
+
+  if (!claim) {
+    return interaction.reply({
+      content: "⚠️ This MM ticket has not been claimed yet.",
+      ephemeral: true
+    });
+  }
+
+  if (claim.userId !== interaction.user.id && !isOwner(interaction.user.id)) {
+    return interaction.reply({
+      content: `⚠️ Only the claimed MM can use this. Claimed MM: <@${claim.userId}>`,
+      ephemeral: true
+    });
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId("mm_payment_modal")
+    .setTitle("MM Payment Needed");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("amount")
+        .setLabel("How much payment is needed?")
+        .setPlaceholder("Example: 1.50 or 3")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("reason")
+        .setLabel("Reason / note")
+        .setPlaceholder("Example: MM fee before completing trade")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false)
+    )
+  );
+
+  return interaction.showModal(modal);
+}
 // =======================
-// STAFF APPLICATION SYSTEM
+// APPLICATION SYSTEM
 // =======================
 
 function applicationPanel() {
@@ -782,10 +827,9 @@ function applicationPanel() {
     [
       "Want to help the server?",
       "",
-      "Click **Start Application** below.",
-      "Bloom Bot will ask what position you want to apply for.",
+      "Click **Start Application**.",
+      "Then choose what you want to apply for.",
       "",
-      "Available positions:",
       "🛡️ Middleman",
       "👑 Admin"
     ].join("\n"),
@@ -818,6 +862,10 @@ function applicationChoiceButtons() {
       .setStyle(ButtonStyle.Success)
   );
 }
+
+// =======================
+// MM APPLICATION MODALS
+// =======================
 
 async function mmApplyModalPart1(interaction) {
   const modal = new ModalBuilder()
@@ -901,6 +949,10 @@ async function mmApplyModalPart2(interaction) {
 
   return interaction.showModal(modal);
 }
+
+// =======================
+// ADMIN APPLICATION MODALS
+// =======================
 
 async function adminApplyModalPart1(interaction) {
   const modal = new ModalBuilder()
@@ -992,6 +1044,10 @@ async function adminApplyModalPart2(interaction) {
   return interaction.showModal(modal);
 }
 
+// =======================
+// APPLICATION RATING
+// =======================
+
 function rateApplication(type, data) {
   let score = 0;
   const notes = [];
@@ -1078,7 +1134,7 @@ async function sendApplication(interaction, type, data) {
     `${interaction.user} submitted an application for **${position}**.`,
     type === "mm" ? 0x5865f2 : 0xf1c40f
   ).addFields(
-    { name: "👤 Discord Username", value: `${interaction.user}\n${interaction.user.username}`, inline: false }
+    { name: "👤 Applicant", value: `${interaction.user}\n${interaction.user.username}`, inline: false }
   );
 
   if (type === "mm") {
@@ -1122,7 +1178,7 @@ async function sendApplication(interaction, type, data) {
   );
 
   await interaction.channel.send({
-    content: `<@&${MM_REVIEW_ROLE_ID}> New ${position} application!`,
+    content: `<@&${REVIEW_ROLE_ID}> New ${position} application!`,
     embeds: [embed],
     components: [appReviewButtons(type)]
   });
@@ -1181,8 +1237,8 @@ async function sendVouch(interaction, type) {
   const channelId = type === "mm" ? MM_VOUCH_CHANNEL_ID : BUYER_VOUCH_CHANNEL_ID;
   const channel = await client.channels.fetch(channelId);
 
-  const claimedId = ticketClaims.get(interaction.channel.id);
-  const claimedUserText = claimedId ? `<@${claimedId}>` : "Not claimed";
+  const claim = getClaim(interaction.channel.id);
+  const claimedUserText = claim ? `<@${claim.userId}>` : "Not claimed";
 
   let title = "⭐ New Shop Vouch";
   let description = [
@@ -1207,12 +1263,16 @@ async function sendVouch(interaction, type) {
   ).addFields(
     { name: "👤 Vouched By", value: `${interaction.user}\n${interaction.user.username}`, inline: true },
     { name: "⭐ Rating", value: `${rating}/5`, inline: true },
-    { name: type === "mm" ? "🛡️ Claimed MM" : "🏪 Shop Owner", value: type === "mm" ? claimedUserText : `<@${OWNER_ID}>`, inline: false },
+    {
+      name: type === "mm" ? "🛡️ Claimed MM" : "🏪 Shop Owner",
+      value: type === "mm" ? claimedUserText : `<@${OWNER_ID}>`,
+      inline: false
+    },
     { name: "🎫 Ticket", value: `${interaction.channel}`, inline: false }
   );
 
   await channel.send({
-    content: type === "mm" && claimedId ? `<@${claimedId}> New MM vouch received!` : null,
+    content: type === "mm" && claim ? `<@${claim.userId}> New MM vouch received!` : null,
     embeds: [embed]
   });
 
@@ -1238,7 +1298,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("credit")
-    .setDescription("Manage store credit")
+    .setDescription("Owner only: manage store credit")
     .addSubcommand(s =>
       s.setName("add")
         .setDescription("Add store credit")
@@ -1259,7 +1319,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("discount")
-    .setDescription("Manage discount codes")
+    .setDescription("Owner only: manage discount codes")
     .addSubcommand(s =>
       s.setName("create")
         .setDescription("Create a discount code")
@@ -1271,12 +1331,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("addtoticket")
-    .setDescription("Add user to ticket")
+    .setDescription("Staff only: add user to ticket")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("close")
-    .setDescription("Close this ticket")
+    .setDescription("Staff only: close this ticket")
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -1296,10 +1356,7 @@ async function registerCommands() {
 
 client.on("interactionCreate", async interaction => {
   try {
-    // =======================
     // SLASH COMMANDS
-    // =======================
-
     if (interaction.isChatInputCommand()) {
       const cmd = interaction.commandName;
 
@@ -1313,17 +1370,20 @@ client.on("interactionCreate", async interaction => {
       if (cmd === "panel") {
         if (isBuyerTicket(interaction.channel)) return interaction.reply(buyerPanel());
         if (isMMTicket(interaction.channel)) return interaction.reply(mmPanel());
-        if (isMMApplyTicket(interaction.channel)) return interaction.reply(applicationPanel());
+        if (isApplicationTicket(interaction.channel)) return interaction.reply(applicationPanel());
 
         return interaction.reply({
-          content: "❌ This only works in buyer/MM/application tickets.",
+          content: "❌ This only works inside buyer/MM/application tickets.",
           ephemeral: true
         });
       }
 
       if (cmd === "credit") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: denyFunny(), ephemeral: true });
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content: ownerDeny(),
+            ephemeral: true
+          });
         }
 
         const sub = interaction.options.getSubcommand();
@@ -1360,8 +1420,11 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (cmd === "discount") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: denyFunny(), ephemeral: true });
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content: ownerDeny(),
+            ephemeral: true
+          });
         }
 
         const sub = interaction.options.getSubcommand();
@@ -1394,10 +1457,14 @@ client.on("interactionCreate", async interaction => {
 
       if (cmd === "addtoticket") {
         if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: denyFunny(), ephemeral: true });
+          return interaction.reply({
+            content: deny(),
+            ephemeral: true
+          });
         }
 
         const user = interaction.options.getUser("user");
+
         await addUserToTicket(interaction.channel, user.id);
 
         return interaction.reply(`✅ Added ${user} to this ticket.`);
@@ -1405,7 +1472,10 @@ client.on("interactionCreate", async interaction => {
 
       if (cmd === "close") {
         if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: denyFunny(), ephemeral: true });
+          return interaction.reply({
+            content: deny(),
+            ephemeral: true
+          });
         }
 
         if (
@@ -1420,18 +1490,21 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.reply("🔒 Closing ticket in 5 seconds...");
-        setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+
+        setTimeout(() => {
+          interaction.channel.delete().catch(() => {});
+        }, 5000);
       }
     }
 
-    // =======================
     // BUTTONS
-    // =======================
-
     if (interaction.isButton()) {
       if (interaction.customId === "buyer_start") {
         if (!isBuyerTicket(interaction.channel)) {
-          return interaction.reply({ content: "❌ Buyer tickets only.", ephemeral: true });
+          return interaction.reply({
+            content: "❌ Buyer tickets only.",
+            ephemeral: true
+          });
         }
 
         return buyerCategoryMenu(interaction);
@@ -1439,7 +1512,10 @@ client.on("interactionCreate", async interaction => {
 
       if (interaction.customId === "mm_start") {
         if (!isMMTicket(interaction.channel)) {
-          return interaction.reply({ content: "❌ MM tickets only.", ephemeral: true });
+          return interaction.reply({
+            content: "❌ MM tickets only.",
+            ephemeral: true
+          });
         }
 
         return interaction.reply({
@@ -1450,8 +1526,11 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "apply_start") {
-        if (!isMMApplyTicket(interaction.channel)) {
-          return interaction.reply({ content: "❌ Application tickets only.", ephemeral: true });
+        if (!isApplicationTicket(interaction.channel)) {
+          return interaction.reply({
+            content: "❌ Application tickets only.",
+            ephemeral: true
+          });
         }
 
         return interaction.reply({
@@ -1478,46 +1557,75 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId.startsWith("app_accept_")) {
-        if (!staffOrOwner(interaction)) return interaction.reply({ content: "❌ Staff only.", ephemeral: true });
-        return interaction.reply(`✅ Application accepted by ${interaction.user}.`);
-      }
-
-      if (interaction.customId.startsWith("app_deny_")) {
-        if (!staffOrOwner(interaction)) return interaction.reply({ content: "❌ Staff only.", ephemeral: true });
-        return interaction.reply(`❌ Application denied by ${interaction.user}.`);
-      }
-
-      if (interaction.customId === "order_claim") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) {
-          return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
-        }
-
-        if (ticketClaims.has(interaction.channel.id)) {
+        if (!staffOrOwner(interaction)) {
           return interaction.reply({
-            content: `⚠️ This order is already claimed by <@${ticketClaims.get(interaction.channel.id)}>`,
+            content: "❌ Staff only.",
             ephemeral: true
           });
         }
 
-        ticketClaims.set(interaction.channel.id, interaction.user.id);
+        return interaction.reply(`✅ Application accepted by ${interaction.user}.`);
+      }
+
+      if (interaction.customId.startsWith("app_deny_")) {
+        if (!staffOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ Staff only.",
+            ephemeral: true
+          });
+        }
+
+        return interaction.reply(`❌ Application denied by ${interaction.user}.`);
+      }
+
+      if (interaction.customId === "order_claim") {
+        if (!sellerOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ Sellers only.",
+            ephemeral: true
+          });
+        }
+
+        if (hasClaim(interaction.channel.id)) {
+          const claim = getClaim(interaction.channel.id);
+
+          return interaction.reply({
+            content: `⚠️ This order is already claimed by <@${claim.userId}>.`,
+            ephemeral: true
+          });
+        }
+
+        setClaim(interaction.channel.id, interaction.user.id, "shop");
 
         return interaction.reply(`🙋 Order claimed by ${interaction.user}`);
       }
 
       if (interaction.customId === "order_paid") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) {
-          return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!sellerOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ Sellers only.",
+            ephemeral: true
+          });
         }
 
-        return interaction.reply("💳 Payment marked as received.");
+        const claim = getClaim(interaction.channel.id);
+
+        return interaction.reply(
+          claim
+            ? `💳 Payment marked as received.\nSeller: <@${claim.userId}>`
+            : "💳 Payment marked as received.\n⚠️ No seller has claimed this ticket."
+        );
       }
 
       if (interaction.customId === "order_done") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) {
-          return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!sellerOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ Sellers only.",
+            ephemeral: true
+          });
         }
 
-        const sellerId = ticketClaims.get(interaction.channel.id);
+        const claim = getClaim(interaction.channel.id);
 
         return interaction.reply({
           content: [
@@ -1525,64 +1633,89 @@ client.on("interactionCreate", async interaction => {
             "",
             "⭐ **Vouch is required before this ticket can be closed.**",
             `Please vouch this server and <@${OWNER_ID}>.`,
-            sellerId ? `Seller who claimed this ticket: <@${sellerId}>` : "Seller who claimed this ticket: Not claimed"
+            claim ? `Seller who claimed this ticket: <@${claim.userId}>` : "Seller who claimed this ticket: Not claimed"
           ].join("\n"),
           components: [vouchButton("shop")]
         });
       }
 
       if (interaction.customId === "order_cancel") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) {
-          return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!sellerOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ Sellers only.",
+            ephemeral: true
+          });
         }
 
         return interaction.reply("❌ Order cancelled.");
       }
 
       if (interaction.customId === "mm_claim") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: "❌ MM only.", ephemeral: true });
-        }
-
-        if (ticketClaims.has(interaction.channel.id)) {
+        if (!mmOrOwner(interaction)) {
           return interaction.reply({
-            content: `⚠️ This MM ticket is already claimed by <@${ticketClaims.get(interaction.channel.id)}>.\nNo fighting over tickets 😭`,
+            content: "❌ MM only.",
             ephemeral: true
           });
         }
 
-        ticketClaims.set(interaction.channel.id, interaction.user.id);
+        if (hasClaim(interaction.channel.id)) {
+          const claim = getClaim(interaction.channel.id);
+
+          return interaction.reply({
+            content: `⚠️ This MM ticket is already claimed by <@${claim.userId}>.\nNo fighting over tickets 😭`,
+            ephemeral: true
+          });
+        }
+
+        setClaim(interaction.channel.id, interaction.user.id, "mm");
 
         return interaction.reply(`🛡️ MM ticket claimed by ${interaction.user}`);
       }
 
-      if (interaction.customId === "mm_confirmed") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+      if (interaction.customId === "mm_payment_needed") {
+        if (!mmOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ MM only.",
+            ephemeral: true
+          });
         }
 
-        const mmId = ticketClaims.get(interaction.channel.id);
+        return mmPaymentModal(interaction);
+      }
+
+      if (interaction.customId === "mm_confirmed") {
+        if (!mmOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ MM only.",
+            ephemeral: true
+          });
+        }
+
+        const claim = getClaim(interaction.channel.id);
 
         return interaction.reply(
-          mmId
-            ? `✅ Both traders confirmed.\nClaimed MM: <@${mmId}>`
+          claim
+            ? `✅ Both traders confirmed.\nClaimed MM: <@${claim.userId}>`
             : "✅ Both traders confirmed.\n⚠️ No MM has claimed this ticket yet."
         );
       }
 
       if (interaction.customId === "mm_done") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+        if (!mmOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ MM only.",
+            ephemeral: true
+          });
         }
 
-        const mmId = ticketClaims.get(interaction.channel.id);
+        const claim = getClaim(interaction.channel.id);
 
         return interaction.reply({
           content: [
             "📦 Trade completed.",
             "",
             "⭐ **MM vouch is required before this ticket can be closed.**",
-            mmId ? `Please vouch the claimed MM: <@${mmId}>` : "No MM claimed this ticket yet.",
+            claim ? `Please vouch the claimed MM: <@${claim.userId}>` : "No MM claimed this ticket yet.",
             "Click below to write the vouch."
           ].join("\n"),
           components: [vouchButton("mm")]
@@ -1590,8 +1723,11 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "mm_cancel") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+        if (!mmOrOwner(interaction)) {
+          return interaction.reply({
+            content: "❌ MM only.",
+            ephemeral: true
+          });
         }
 
         return interaction.reply("❌ MM request cancelled.");
@@ -1605,11 +1741,7 @@ client.on("interactionCreate", async interaction => {
         return vouchModal(interaction, "mm");
       }
     }
-
-    // =======================
-    // SELECT MENUS
-    // =======================
-
+        // SELECT MENUS
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "buyer_category") {
         return buyerItemMenu(interaction, interaction.values[0]);
@@ -1620,10 +1752,10 @@ client.on("interactionCreate", async interaction => {
         const itemName = interaction.values[0];
 
         if (itemName === "Other") {
-          return buyerCustomOrderModal(interaction, category, "Custom Item", null);
+          return buyerOrderModal(interaction, category, "Custom Item", null);
         }
 
-        return buyerCustomOrderModal(interaction, category, itemName, priceList[category][itemName]);
+        return buyerOrderModal(interaction, category, itemName, priceList[category][itemName]);
       }
 
       if (interaction.customId === "mm_size") {
@@ -1631,6 +1763,7 @@ client.on("interactionCreate", async interaction => {
       }
     }
 
+    // USER SELECT MENUS
     if (interaction.isUserSelectMenu()) {
       if (interaction.customId.startsWith("mm_trader_")) {
         const size = interaction.customId.replace("mm_trader_", "");
@@ -1649,14 +1782,14 @@ client.on("interactionCreate", async interaction => {
       }
     }
 
-    // =======================
     // MODALS
-    // =======================
-
     if (interaction.isModalSubmit()) {
       if (interaction.customId === "discount_create_modal") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({ content: denyFunny(), ephemeral: true });
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content: ownerDeny(),
+            ephemeral: true
+          });
         }
 
         const code = interaction.fields.getTextInputValue("code");
@@ -1676,7 +1809,12 @@ client.on("interactionCreate", async interaction => {
         const created = createDiscountCode(code, type, amount, uses, interaction.user.id);
 
         return interaction.reply({
-          content: `✅ Discount code **${created.code}** created.\nType: **${created.type}**\nAmount: **${created.type === "percent" ? `${created.amount}%` : money(created.amount)}**\nUses: **${created.maxUses}**`,
+          content: [
+            `✅ Discount code **${created.code}** created.`,
+            `Type: **${created.type}**`,
+            `Amount: **${created.type === "percent" ? `${created.amount}%` : money(created.amount)}**`,
+            `Max Uses: **${created.maxUses}**`
+          ].join("\n"),
           ephemeral: true
         });
       }
@@ -1724,8 +1862,55 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
+      if (interaction.customId === "mm_payment_modal") {
+        const claim = getClaim(interaction.channel.id);
+
+        if (!claim) {
+          return interaction.reply({
+            content: "⚠️ This MM ticket has not been claimed yet.",
+            ephemeral: true
+          });
+        }
+
+        if (claim.userId !== interaction.user.id && !isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content: `⚠️ Only the claimed MM can set payment needed. Claimed MM: <@${claim.userId}>`,
+            ephemeral: true
+          });
+        }
+
+        const amountRaw = interaction.fields.getTextInputValue("amount");
+        const reason = interaction.fields.getTextInputValue("reason") || "MM payment/fee needed";
+        const amount = Number(amountRaw);
+
+        if (isNaN(amount) || amount <= 0) {
+          return interaction.reply({
+            content: "❌ Invalid payment amount.",
+            ephemeral: true
+          });
+        }
+
+        const embed = premiumEmbed(
+          "💵 MM Payment Needed",
+          [
+            `Claimed MM: <@${claim.userId}>`,
+            `Amount Needed: **${money(amount)}**`,
+            "",
+            `Note: ${reason}`,
+            "",
+            "Both traders should confirm payment before the trade continues."
+          ].join("\n"),
+          0xf1c40f
+        );
+
+        return interaction.reply({
+          content: `💵 MM payment needed. Claimed MM: <@${claim.userId}>`,
+          embeds: [embed]
+        });
+      }
+
       if (interaction.customId === "mm_apply_part1") {
-        mmApplications.set(interaction.user.id, {
+        applications.set(interaction.user.id, {
           type: "mm",
           vouches: interaction.fields.getTextInputValue("vouches"),
           timezone: interaction.fields.getTextInputValue("timezone"),
@@ -1750,7 +1935,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "mm_apply_part2") {
-        const part1 = mmApplications.get(interaction.user.id);
+        const part1 = applications.get(interaction.user.id);
 
         if (!part1) {
           return interaction.reply({
@@ -1766,12 +1951,13 @@ client.on("interactionCreate", async interaction => {
           why_choose: interaction.fields.getTextInputValue("why_choose")
         };
 
-        mmApplications.delete(interaction.user.id);
+        applications.delete(interaction.user.id);
+
         return sendApplication(interaction, "mm", fullData);
       }
 
       if (interaction.customId === "admin_apply_part1") {
-        mmApplications.set(interaction.user.id, {
+        applications.set(interaction.user.id, {
           type: "admin",
           age: interaction.fields.getTextInputValue("age"),
           timezone: interaction.fields.getTextInputValue("timezone"),
@@ -1796,7 +1982,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "admin_apply_part2") {
-        const part1 = mmApplications.get(interaction.user.id);
+        const part1 = applications.get(interaction.user.id);
 
         if (!part1) {
           return interaction.reply({
@@ -1813,7 +1999,8 @@ client.on("interactionCreate", async interaction => {
           why_choose: interaction.fields.getTextInputValue("why_choose")
         };
 
-        mmApplications.delete(interaction.user.id);
+        applications.delete(interaction.user.id);
+
         return sendApplication(interaction, "admin", fullData);
       }
 
@@ -1854,7 +2041,7 @@ client.on("channelCreate", async channel => {
         await channel.send(mmPanel());
       }
 
-      if (isMMApplyTicket(channel)) {
+      if (isApplicationTicket(channel)) {
         await channel.send(applicationPanel());
       }
     } catch (err) {
