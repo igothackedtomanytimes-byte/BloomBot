@@ -13,24 +13,42 @@ app.listen(PORT, () => {
 });
 
 const {
-  Client, GatewayIntentBits, Partials, EmbedBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder,
-  TextInputStyle, SlashCommandBuilder, REST, Routes
+  Client,
+  GatewayIntentBits,
+  Partials,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  SlashCommandBuilder,
+  REST,
+  Routes
 } = require("discord.js");
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
+// OWNER
+const OWNER_ID = "1442212943470264320";
+let botMode = "normal"; // normal, mods, funny, roast, master
+
+// CATEGORY IDS
 const BUYER_CATEGORY_ID = "1524567770002489584";
 const MM_CATEGORY_ID = "1524570656291688652";
 
+// ROLE IDS
 const NEW_MM_ROLE_ID = "1523782888296939660";
 const MM_ROLE_ID = "1516085004801802260";
 const TRUSTED_MM_ROLE_ID = "1523783007842992238";
 const SELLER_ROLE_ID = "1516085109378252810";
 
+// VOUCH CHANNEL IDS
 const BUYER_VOUCH_CHANNEL_ID = "1516081257547825232";
 const MM_VOUCH_CHANNEL_ID = "1523533160506327090";
 
@@ -42,6 +60,8 @@ const client = new Client({
   ],
   partials: [Partials.Channel]
 });
+
+const vouchCompletedTickets = new Set();
 
 const priceList = {
   seeds: {
@@ -74,6 +94,10 @@ const priceList = {
   }
 };
 
+function isOwner(userId) {
+  return userId === OWNER_ID;
+}
+
 function money(n) {
   return `$${Number(n).toFixed(2)}`;
 }
@@ -90,6 +114,41 @@ function cleanAmount(raw) {
   const n = Number(raw);
   if (isNaN(n) || n <= 0) return 1;
   return n;
+}
+
+function funnyDeny() {
+  const replies = [
+    "💀 Nice try lil bro. This bot listens to the boss only.",
+    "🚫 Access denied. You are not him.",
+    "😂 Bro tried owner powers with a guest pass.",
+    "🛡️ Nope. Only my owner can do that.",
+    "😭 You clicked that like you owned the place."
+  ];
+  return replies[Math.floor(Math.random() * replies.length)];
+}
+
+function ownerOnly(interaction) {
+  if (!isOwner(interaction.user.id)) {
+    interaction.reply({
+      content: funnyDeny(),
+      ephemeral: true
+    });
+    return false;
+  }
+  return true;
+}
+
+function onlyStaff(member) {
+  return (
+    member.roles.cache.has(SELLER_ROLE_ID) ||
+    member.roles.cache.has(NEW_MM_ROLE_ID) ||
+    member.roles.cache.has(MM_ROLE_ID) ||
+    member.roles.cache.has(TRUSTED_MM_ROLE_ID)
+  );
+}
+
+function staffOrOwner(interaction) {
+  return onlyStaff(interaction.member) || isOwner(interaction.user.id);
 }
 
 function premiumEmbed(title, description, color = 0x2ecc71) {
@@ -117,39 +176,28 @@ async function addUserToTicket(channel, userId) {
   }
 }
 
-function extractMentionId(text) {
-  const match = text.match(/<@!?(\d+)>/);
-  return match ? match[1] : null;
-}
-
-async function resolveUserFromText(guild, text) {
-  const mentionId = extractMentionId(text);
-  if (mentionId) {
-    try {
-      return await guild.members.fetch(mentionId);
-    } catch {
-      return null;
-    }
+function protectOwnerTarget(interaction, user) {
+  if (user && user.id === OWNER_ID && !isOwner(interaction.user.id)) {
+    interaction.reply({
+      content: "💀 You tried using the bot against my owner? Bold move. Bad move.",
+      ephemeral: true
+    });
+    return false;
   }
-
-  const raw = text.replace("@", "").trim().toLowerCase();
-
-  try {
-    const members = await guild.members.fetch();
-    return members.find(m =>
-      m.user.username.toLowerCase() === raw ||
-      m.displayName.toLowerCase() === raw ||
-      `${m.user.username.toLowerCase()}#${m.user.discriminator}` === raw
-    ) || null;
-  } catch {
-    return null;
-  }
+  return true;
 }
 
 function buyerPanel() {
   const embed = premiumEmbed(
     "🛒 Buyer Assistant",
-    "Welcome! Click **Start Order** and Bloom Bot will help you place your order.\n\n• Auto price calculator\n• Custom item option\n• Seller claim system\n• Required vouch after delivery"
+    [
+      "Welcome! Click **Start Order** and Bloom Bot will help you place your order.",
+      "",
+      "✅ Auto price calculator",
+      "✅ Custom item option",
+      "✅ Seller claim system",
+      "✅ Required vouch after delivery"
+    ].join("\n")
   );
 
   const row = new ActionRowBuilder().addComponents(
@@ -166,7 +214,15 @@ function buyerPanel() {
 function mmPanel() {
   const embed = premiumEmbed(
     "🛡️ Middleman Assistant",
-    "Welcome! Click **Start MM Request** and Bloom Bot will organize the trade.\n\n• Auto adds mentioned trader to the ticket\n• Pings correct MM role\n• Clean trade summary\n• Required vouch after completion",
+    [
+      "Welcome! Click **Start MM Request** and Bloom Bot will organize the trade.",
+      "",
+      "✅ Trader 1 is automatically you",
+      "✅ Select Trader 2 from a user menu",
+      "✅ Bot adds Trader 2 to the ticket automatically",
+      "✅ Pings the correct MM role",
+      "✅ Required MM vouch after completion"
+    ].join("\n"),
     0x5865f2
   );
 
@@ -403,6 +459,7 @@ async function sendVouch(interaction, type) {
   );
 
   await channel.send({ embeds: [embed] });
+  vouchCompletedTickets.add(interaction.channel.id);
 
   return interaction.reply({
     content: `✅ Vouch sent to <#${channelId}>. Thank you!`,
@@ -423,20 +480,26 @@ function mmSizeMenu() {
   return new ActionRowBuilder().addComponents(menu);
 }
 
-async function mmModal(interaction, size) {
+async function traderSelectMenu(interaction, size) {
+  const menu = new UserSelectMenuBuilder()
+    .setCustomId(`mm_trader_${size}`)
+    .setPlaceholder("Select the other trader")
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  return interaction.reply({
+    content: "👤 Select the **other trader**. Bloom Bot will add them to this ticket automatically.",
+    components: [new ActionRowBuilder().addComponents(menu)],
+    ephemeral: true
+  });
+}
+
+async function mmModal(interaction, size, traderId) {
   const modal = new ModalBuilder()
-    .setCustomId(`mm_modal_${size}`)
+    .setCustomId(`mm_modal_${size}_${traderId}`)
     .setTitle("Middleman Request");
 
   modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("trader2")
-        .setLabel("Other trader @mention or username")
-        .setPlaceholder("@tradername")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("gives1")
@@ -482,15 +545,19 @@ async function sendMMSummary(interaction, data) {
     statusText = "Waiting for Trusted MM";
   }
 
+  const trader2User = await client.users.fetch(data.trader2Id).catch(() => null);
+
   const embed = premiumEmbed("🛡️ Middleman Request", "A new MM request has been created.", 0x5865f2)
     .addFields(
       { name: "👤 Trader 1", value: `${interaction.user}\n${interaction.user.username}`, inline: true },
-      { name: "👤 Trader 2", value: data.trader2Text, inline: true },
+      { name: "👤 Trader 2", value: trader2User ? `${trader2User}\n${trader2User.username}` : `<@${data.trader2Id}>`, inline: true },
       { name: "📦 Trader 1 Gives", value: data.gives1, inline: false },
       { name: "📦 Trader 2 Gives", value: data.gives2, inline: false },
       { name: "📊 Trade Size", value: sizeText, inline: true },
       { name: "⏳ Status", value: statusText, inline: true }
     );
+
+  await addUserToTicket(interaction.channel, data.trader2Id);
 
   await interaction.channel.send({
     content: `<@&${roleId}> New MM request!`,
@@ -499,42 +566,108 @@ async function sendMMSummary(interaction, data) {
   });
 
   return interaction.reply({
-    content: "✅ MM request sent.",
+    content: "✅ MM request sent and the other trader was added to the ticket.",
     ephemeral: true
   });
-}
-
-function onlyStaff(member) {
-  return member.roles.cache.has(SELLER_ROLE_ID) ||
-    member.roles.cache.has(NEW_MM_ROLE_ID) ||
-    member.roles.cache.has(MM_ROLE_ID) ||
-    member.roles.cache.has(TRUSTED_MM_ROLE_ID);
 }
 
 const commands = [
   new SlashCommandBuilder().setName("panel").setDescription("Send ticket assistant panel"),
   new SlashCommandBuilder().setName("ping").setDescription("Check bot ping"),
   new SlashCommandBuilder().setName("help").setDescription("Show commands"),
+
+  new SlashCommandBuilder()
+    .setName("mode")
+    .setDescription("Owner only: change Bloom Bot mode")
+    .addStringOption(o =>
+      o.setName("type")
+        .setDescription("Choose mode")
+        .setRequired(true)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Mods", value: "mods" },
+          { name: "Funny", value: "funny" },
+          { name: "Roast", value: "roast" },
+          { name: "Master", value: "master" }
+        )
+    ),
+
+  new SlashCommandBuilder().setName("stopmode").setDescription("Owner only: reset Bloom Bot mode"),
+
   new SlashCommandBuilder().setName("coinflip").setDescription("Flip a coin"),
-  new SlashCommandBuilder().setName("8ball").setDescription("Ask the magic 8ball")
+
+  new SlashCommandBuilder()
+    .setName("8ball")
+    .setDescription("Ask the magic 8ball")
     .addStringOption(o => o.setName("question").setDescription("Your question").setRequired(true)),
-  new SlashCommandBuilder().setName("rate").setDescription("Rate something")
+
+  new SlashCommandBuilder()
+    .setName("rate")
+    .setDescription("Rate something")
     .addStringOption(o => o.setName("thing").setDescription("Thing to rate").setRequired(true)),
-  new SlashCommandBuilder().setName("roast").setDescription("Funny roast")
+
+  new SlashCommandBuilder()
+    .setName("roast")
+    .setDescription("Funny roast")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(false)),
-  new SlashCommandBuilder().setName("say").setDescription("Make the bot say something")
+
+  new SlashCommandBuilder()
+    .setName("fakeban")
+    .setDescription("Fake ban someone for fun")
+    .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("hack")
+    .setDescription("Fake hack someone for fun")
+    .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("dice")
+    .setDescription("Roll a dice"),
+
+  new SlashCommandBuilder()
+    .setName("rps")
+    .setDescription("Rock paper scissors")
+    .addStringOption(o =>
+      o.setName("choice")
+        .setDescription("Choose")
+        .setRequired(true)
+        .addChoices(
+          { name: "Rock", value: "rock" },
+          { name: "Paper", value: "paper" },
+          { name: "Scissors", value: "scissors" }
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("say")
+    .setDescription("Staff only: make the bot say something")
     .addStringOption(o => o.setName("message").setDescription("Message").setRequired(true)),
-  new SlashCommandBuilder().setName("embed").setDescription("Make a clean embed")
+
+  new SlashCommandBuilder()
+    .setName("embed")
+    .setDescription("Staff only: make a clean embed")
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
     .addStringOption(o => o.setName("message").setDescription("Message").setRequired(true)),
-  new SlashCommandBuilder().setName("avatar").setDescription("Show avatar")
+
+  new SlashCommandBuilder()
+    .setName("avatar")
+    .setDescription("Show avatar")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(false)),
-  new SlashCommandBuilder().setName("userinfo").setDescription("Show user info")
+
+  new SlashCommandBuilder()
+    .setName("userinfo")
+    .setDescription("Show user info")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(false)),
+
   new SlashCommandBuilder().setName("serverinfo").setDescription("Show server info"),
-  new SlashCommandBuilder().setName("addtoticket").setDescription("Add a user to this ticket")
+
+  new SlashCommandBuilder()
+    .setName("addtoticket")
+    .setDescription("Staff only: add a user to this ticket")
     .addUserOption(o => o.setName("user").setDescription("User to add").setRequired(true)),
-  new SlashCommandBuilder().setName("close").setDescription("Close/delete this ticket")
+
+  new SlashCommandBuilder().setName("close").setDescription("Staff only: close/delete this ticket")
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -564,17 +697,37 @@ client.on("interactionCreate", async interaction => {
     if (interaction.isChatInputCommand()) {
       const cmd = interaction.commandName;
 
+      if (botMode === "master" && !isOwner(interaction.user.id)) {
+        return interaction.reply({
+          content: "💀 Master mode is active. I only listen to my owner right now.",
+          ephemeral: true
+        });
+      }
+
+      if (cmd === "mode") {
+        if (!ownerOnly(interaction)) return;
+        botMode = interaction.options.getString("type");
+        return interaction.reply(`👑 Yes master. Bloom Bot mode changed to **${botMode.toUpperCase()}**.`);
+      }
+
+      if (cmd === "stopmode") {
+        if (!ownerOnly(interaction)) return;
+        botMode = "normal";
+        return interaction.reply("✅ Bloom Bot is back to **NORMAL MODE**.");
+      }
+
       if (cmd === "ping") {
         return interaction.reply({ content: `🏓 Pong! ${client.ws.ping}ms`, ephemeral: true });
       }
 
       if (cmd === "help") {
-        const embed = premiumEmbed("🌱 Bloom Bot Commands", "Premium server assistant commands.")
+        const embed = premiumEmbed("🌱 Bloom Bot Commands", `Current Mode: **${botMode.toUpperCase()}**`)
           .addFields(
+            { name: "👑 Owner", value: "`/mode` `/stopmode`" },
             { name: "🎫 Ticket", value: "`/panel` `/addtoticket` `/close`" },
             { name: "🛒 Buyer", value: "Buyer Assistant auto-posts in buyer tickets." },
             { name: "🛡️ MM", value: "MM Assistant auto-posts in MM tickets." },
-            { name: "🎉 Fun", value: "`/coinflip` `/8ball` `/rate` `/roast`" },
+            { name: "🎉 Fun", value: "`/coinflip` `/8ball` `/rate` `/roast` `/fakeban` `/hack` `/dice` `/rps`" },
             { name: "🧰 Useful", value: "`/avatar` `/userinfo` `/serverinfo` `/say` `/embed`" }
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -603,24 +756,62 @@ client.on("interactionCreate", async interaction => {
 
       if (cmd === "roast") {
         const user = interaction.options.getUser("user") || interaction.user;
+        if (!protectOwnerTarget(interaction, user)) return;
         const roasts = [
           "Your WiFi has more stability than your trades.",
           "You joined the ticket and even the bot got confused.",
           "Bro is moving like a loading screen.",
-          "Your luck is lower than out-of-stock items."
+          "Your luck is lower than out-of-stock items.",
+          "You got rejected by the loading bar.",
+          "Your trade history looks like a warning label."
         ];
         return interaction.reply(`${user} ${roasts[Math.floor(Math.random() * roasts.length)]}`);
       }
 
+      if (cmd === "fakeban") {
+        const user = interaction.options.getUser("user");
+        if (!protectOwnerTarget(interaction, user)) return;
+        return interaction.reply(`🔨 ${user} has been fake banned for being too suspicious. Just kidding 😭`);
+      }
+
+      if (cmd === "hack") {
+        const user = interaction.options.getUser("user");
+        if (!protectOwnerTarget(interaction, user)) return;
+        return interaction.reply(`💻 Hacking ${user}...\n[█▒▒▒▒▒▒▒▒▒] 10%\n[██████████] 100%\nResult: found 0 brain cells and 900 ping.`);
+      }
+
+      if (cmd === "dice") {
+        return interaction.reply(`🎲 You rolled **${Math.floor(Math.random() * 6) + 1}**`);
+      }
+
+      if (cmd === "rps") {
+        const userChoice = interaction.options.getString("choice");
+        const choices = ["rock", "paper", "scissors"];
+        const botChoice = choices[Math.floor(Math.random() * choices.length)];
+
+        let result = "It's a tie.";
+        if (
+          (userChoice === "rock" && botChoice === "scissors") ||
+          (userChoice === "paper" && botChoice === "rock") ||
+          (userChoice === "scissors" && botChoice === "paper")
+        ) {
+          result = "You win.";
+        } else if (userChoice !== botChoice) {
+          result = "I win.";
+        }
+
+        return interaction.reply(`✊📄✂️ You chose **${userChoice}**, I chose **${botChoice}**. **${result}**`);
+      }
+
       if (cmd === "say") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ Staff only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: funnyDeny(), ephemeral: true });
         const msg = interaction.options.getString("message");
         await interaction.reply({ content: "✅ Sent.", ephemeral: true });
         return interaction.channel.send(msg);
       }
 
       if (cmd === "embed") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ Staff only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: funnyDeny(), ephemeral: true });
         const title = interaction.options.getString("title");
         const message = interaction.options.getString("message");
         return interaction.reply({ embeds: [premiumEmbed(title, message)] });
@@ -657,20 +848,35 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (cmd === "addtoticket") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ Staff only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: funnyDeny(), ephemeral: true });
         const user = interaction.options.getUser("user");
         await addUserToTicket(interaction.channel, user.id);
         return interaction.reply(`✅ Added ${user} to the ticket.`);
       }
 
       if (cmd === "close") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ Staff only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: funnyDeny(), ephemeral: true });
+
+        if ((isBuyerTicket(interaction.channel) || isMMTicket(interaction.channel)) && !vouchCompletedTickets.has(interaction.channel.id) && !isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content: "⭐ This ticket cannot be closed yet. A vouch is required first.",
+            ephemeral: true
+          });
+        }
+
         await interaction.reply("🔒 Closing ticket in 5 seconds...");
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
       }
     }
 
     if (interaction.isButton()) {
+      if (botMode === "master" && !isOwner(interaction.user.id)) {
+        return interaction.reply({
+          content: "💀 Master mode is active. Buttons are owner-only right now.",
+          ephemeral: true
+        });
+      }
+
       if (interaction.customId === "buyer_start") {
         if (!isBuyerTicket(interaction.channel)) return interaction.reply({ content: "❌ Buyer tickets only.", ephemeral: true });
         return buyerCategoryMenu(interaction);
@@ -682,17 +888,17 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "order_claim") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
         return interaction.reply(`🙋 Order claimed by ${interaction.user}`);
       }
 
       if (interaction.customId === "order_paid") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
         return interaction.reply("💳 Payment marked as received.");
       }
 
       if (interaction.customId === "order_done") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
         return interaction.reply({
           content: `📦 Order delivered.\n\n⭐ **Vouch is required before this ticket is closed.**\nClick the button below to write your vouch.`,
           components: [vouchButton("buyer")]
@@ -700,22 +906,22 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "order_cancel") {
-        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
+        if (!interaction.member.roles.cache.has(SELLER_ROLE_ID) && !isOwner(interaction.user.id)) return interaction.reply({ content: "❌ Sellers only.", ephemeral: true });
         return interaction.reply("❌ Order cancelled.");
       }
 
       if (interaction.customId === "mm_claim") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
         return interaction.reply(`🛡️ MM claimed by ${interaction.user}`);
       }
 
       if (interaction.customId === "mm_confirmed") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
         return interaction.reply("✅ Both traders confirmed.");
       }
 
       if (interaction.customId === "mm_done") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
         return interaction.reply({
           content: `📦 Trade completed.\n\n⭐ **Both traders should vouch before this ticket is closed.**\nClick below to write your MM vouch.`,
           components: [vouchButton("mm")]
@@ -723,20 +929,22 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "mm_cancel") {
-        if (!onlyStaff(interaction.member)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
+        if (!staffOrOwner(interaction)) return interaction.reply({ content: "❌ MM only.", ephemeral: true });
         return interaction.reply("❌ MM request cancelled.");
       }
 
-      if (interaction.customId === "vouch_buyer") {
-        return vouchModal(interaction, "buyer");
-      }
-
-      if (interaction.customId === "vouch_mm") {
-        return vouchModal(interaction, "mm");
-      }
+      if (interaction.customId === "vouch_buyer") return vouchModal(interaction, "buyer");
+      if (interaction.customId === "vouch_mm") return vouchModal(interaction, "mm");
     }
 
     if (interaction.isStringSelectMenu()) {
+      if (botMode === "master" && !isOwner(interaction.user.id)) {
+        return interaction.reply({
+          content: "💀 Master mode is active. I only listen to my owner.",
+          ephemeral: true
+        });
+      }
+
       if (interaction.customId === "buyer_category") {
         return itemMenu(interaction, interaction.values[0]);
       }
@@ -750,11 +958,42 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "mm_size") {
-        return mmModal(interaction, interaction.values[0]);
+        return traderSelectMenu(interaction, interaction.values[0]);
+      }
+    }
+
+    if (interaction.isUserSelectMenu()) {
+      if (botMode === "master" && !isOwner(interaction.user.id)) {
+        return interaction.reply({
+          content: "💀 Master mode is active. Nice try.",
+          ephemeral: true
+        });
+      }
+
+      if (interaction.customId.startsWith("mm_trader_")) {
+        const size = interaction.customId.replace("mm_trader_", "");
+        const traderId = interaction.values[0];
+
+        if (traderId === interaction.user.id) {
+          return interaction.reply({
+            content: "😭 You cannot select yourself as the other trader.",
+            ephemeral: true
+          });
+        }
+
+        await addUserToTicket(interaction.channel, traderId);
+        return mmModal(interaction, size, traderId);
       }
     }
 
     if (interaction.isModalSubmit()) {
+      if (botMode === "master" && !isOwner(interaction.user.id)) {
+        return interaction.reply({
+          content: "💀 Master mode is active. Modal denied.",
+          ephemeral: true
+        });
+      }
+
       if (interaction.customId.startsWith("buyer_other_")) {
         const category = interaction.customId.replace("buyer_other_", "");
         return sendOrderSummary(interaction, {
@@ -783,29 +1022,20 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId.startsWith("mm_modal_")) {
-        const size = interaction.customId.replace("mm_modal_", "");
-        const trader2Text = interaction.fields.getTextInputValue("trader2");
-
-        const member = await resolveUserFromText(interaction.guild, trader2Text);
-        if (member) {
-          await addUserToTicket(interaction.channel, member.id);
-        }
+        const parts = interaction.customId.split("_");
+        const size = parts[2];
+        const trader2Id = parts[3];
 
         return sendMMSummary(interaction, {
           size,
-          trader2Text: member ? `${member.user}\n${member.user.username}` : `${trader2Text}\n⚠️ Could not auto-add user. Use /addtoticket.`,
+          trader2Id,
           gives1: interaction.fields.getTextInputValue("gives1"),
           gives2: interaction.fields.getTextInputValue("gives2")
         });
       }
 
-      if (interaction.customId === "vouch_modal_buyer") {
-        return sendVouch(interaction, "buyer");
-      }
-
-      if (interaction.customId === "vouch_modal_mm") {
-        return sendVouch(interaction, "mm");
-      }
+      if (interaction.customId === "vouch_modal_buyer") return sendVouch(interaction, "buyer");
+      if (interaction.customId === "vouch_modal_mm") return sendVouch(interaction, "mm");
     }
   } catch (err) {
     console.log(err);
