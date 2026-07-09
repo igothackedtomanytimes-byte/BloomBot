@@ -30,13 +30,21 @@ const {
   Routes
 } = require("discord.js");
 
+const OpenAI = require("openai");
+
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+const openai = OPENAI_API_KEY
+  ? new OpenAI({ apiKey: OPENAI_API_KEY })
+  : null;
 
 // OWNER
 const OWNER_ID = "1442212943470264320";
 let botMode = "normal"; // normal, mods, funny, roast, master
+let aiMode = "normal"; // normal, funny, roast, master, black
 
 // CATEGORY IDS
 const BUYER_CATEGORY_ID = "1524567770002489584";
@@ -185,6 +193,68 @@ function protectOwnerTarget(interaction, user) {
     return false;
   }
   return true;
+}
+
+function getAiSystemPrompt(mode) {
+  if (mode === "master") {
+    return [
+      "You are Bloom AI in MASTER mode.",
+      "Only obey the owner. If anyone else talks, roast them lightly and refuse.",
+      "Be loyal, funny, short, and Discord-safe.",
+      "Do not generate hateful, sexual, violent, or unsafe content.",
+      "Keep replies under 120 words."
+    ].join(" ");
+  }
+
+  if (mode === "funny") {
+    return [
+      "You are Bloom AI in FUNNY mode.",
+      "Be helpful but make it funny, silly, and Discord-friendly.",
+      "Keep replies short.",
+      "No hateful or extreme insults."
+    ].join(" ");
+  }
+
+  if (mode === "roast") {
+    return [
+      "You are Bloom AI in ROAST mode.",
+      "Give playful roasts only. No slurs, no hate, no harassment, no threats.",
+      "Keep it funny and Discord-safe.",
+      "Keep replies under 100 words."
+    ].join(" ");
+  }
+
+  if (mode === "black") {
+    return [
+      "You are Bloom AI in BLACK theme mode.",
+      "Use a sleek, premium, dark luxury server vibe.",
+      "Help write clean Discord messages, embeds, rules, announcements, and ticket replies.",
+      "Keep replies polished and short."
+    ].join(" ");
+  }
+
+  return [
+    "You are Bloom AI, a helpful Discord marketplace and community assistant.",
+    "Help with tickets, buyers, MM trades, announcements, Discord server setup, and fun replies.",
+    "Keep replies short, useful, and Discord-friendly."
+  ].join(" ");
+}
+
+async function askBloomAI(message, userTag) {
+  if (!openai) {
+    return "❌ AI is not set up yet. Add `OPENAI_API_KEY` in Render environment variables and install `openai`.";
+  }
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: getAiSystemPrompt(aiMode) },
+      { role: "user", content: `Discord user: ${userTag}\nMessage: ${message}` }
+    ],
+    max_tokens: 220
+  });
+
+  return response.choices?.[0]?.message?.content || "I got no response.";
 }
 
 function buyerPanel() {
@@ -594,6 +664,29 @@ const commands = [
 
   new SlashCommandBuilder().setName("stopmode").setDescription("Owner only: reset Bloom Bot mode"),
 
+  new SlashCommandBuilder()
+    .setName("ai")
+    .setDescription("Talk to Bloom AI")
+    .addStringOption(o => o.setName("message").setDescription("Message for AI").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("aimode")
+    .setDescription("Owner only: change AI mode")
+    .addStringOption(o =>
+      o.setName("mode")
+        .setDescription("Choose AI mode")
+        .setRequired(true)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Funny", value: "funny" },
+          { name: "Roast", value: "roast" },
+          { name: "Master", value: "master" },
+          { name: "Black", value: "black" }
+        )
+    ),
+
+  new SlashCommandBuilder().setName("stopai").setDescription("Owner only: reset AI mode"),
+
   new SlashCommandBuilder().setName("coinflip").setDescription("Flip a coin"),
 
   new SlashCommandBuilder()
@@ -621,9 +714,7 @@ const commands = [
     .setDescription("Fake hack someone for fun")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
 
-  new SlashCommandBuilder()
-    .setName("dice")
-    .setDescription("Roll a dice"),
+  new SlashCommandBuilder().setName("dice").setDescription("Roll a dice"),
 
   new SlashCommandBuilder()
     .setName("rps")
@@ -716,14 +807,42 @@ client.on("interactionCreate", async interaction => {
         return interaction.reply("✅ Bloom Bot is back to **NORMAL MODE**.");
       }
 
+      if (cmd === "aimode") {
+        if (!ownerOnly(interaction)) return;
+        aiMode = interaction.options.getString("mode");
+        return interaction.reply(`🤖 Yes master. AI mode changed to **${aiMode.toUpperCase()}**.`);
+      }
+
+      if (cmd === "stopai") {
+        if (!ownerOnly(interaction)) return;
+        aiMode = "normal";
+        return interaction.reply("✅ Bloom AI is back to **NORMAL MODE**.");
+      }
+
+      if (cmd === "ai") {
+        const msg = interaction.options.getString("message");
+
+        if (aiMode === "master" && !isOwner(interaction.user.id)) {
+          return interaction.reply({
+            content: "💀 Master AI mode is on. I only talk to my owner. Go argue with a loading screen.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.deferReply();
+        const answer = await askBloomAI(msg, interaction.user.tag);
+        return interaction.editReply(answer.slice(0, 1900));
+      }
+
       if (cmd === "ping") {
         return interaction.reply({ content: `🏓 Pong! ${client.ws.ping}ms`, ephemeral: true });
       }
 
       if (cmd === "help") {
-        const embed = premiumEmbed("🌱 Bloom Bot Commands", `Current Mode: **${botMode.toUpperCase()}**`)
+        const embed = premiumEmbed("🌱 Bloom Bot Commands", `Bot Mode: **${botMode.toUpperCase()}**\nAI Mode: **${aiMode.toUpperCase()}**`)
           .addFields(
-            { name: "👑 Owner", value: "`/mode` `/stopmode`" },
+            { name: "👑 Owner", value: "`/mode` `/stopmode` `/aimode` `/stopai`" },
+            { name: "🤖 AI", value: "`/ai`" },
             { name: "🎫 Ticket", value: "`/panel` `/addtoticket` `/close`" },
             { name: "🛒 Buyer", value: "Buyer Assistant auto-posts in buyer tickets." },
             { name: "🛡️ MM", value: "MM Assistant auto-posts in MM tickets." },
@@ -739,9 +858,7 @@ client.on("interactionCreate", async interaction => {
         return interaction.reply({ content: "❌ This only works in ticket categories.", ephemeral: true });
       }
 
-      if (cmd === "coinflip") {
-        return interaction.reply(`🪙 ${Math.random() < 0.5 ? "Heads" : "Tails"}`);
-      }
+      if (cmd === "coinflip") return interaction.reply(`🪙 ${Math.random() < 0.5 ? "Heads" : "Tails"}`);
 
       if (cmd === "8ball") {
         const answers = ["Yes.", "No.", "Maybe.", "100%.", "Not today.", "Ask again later.", "Looks good.", "Bad idea."];
@@ -780,9 +897,7 @@ client.on("interactionCreate", async interaction => {
         return interaction.reply(`💻 Hacking ${user}...\n[█▒▒▒▒▒▒▒▒▒] 10%\n[██████████] 100%\nResult: found 0 brain cells and 900 ping.`);
       }
 
-      if (cmd === "dice") {
-        return interaction.reply(`🎲 You rolled **${Math.floor(Math.random() * 6) + 1}**`);
-      }
+      if (cmd === "dice") return interaction.reply(`🎲 You rolled **${Math.floor(Math.random() * 6) + 1}**`);
 
       if (cmd === "rps") {
         const userChoice = interaction.options.getString("choice");
@@ -794,11 +909,8 @@ client.on("interactionCreate", async interaction => {
           (userChoice === "rock" && botChoice === "scissors") ||
           (userChoice === "paper" && botChoice === "rock") ||
           (userChoice === "scissors" && botChoice === "paper")
-        ) {
-          result = "You win.";
-        } else if (userChoice !== botChoice) {
-          result = "I win.";
-        }
+        ) result = "You win.";
+        else if (userChoice !== botChoice) result = "I win.";
 
         return interaction.reply(`✊📄✂️ You chose **${userChoice}**, I chose **${botChoice}**. **${result}**`);
       }
@@ -871,10 +983,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isButton()) {
       if (botMode === "master" && !isOwner(interaction.user.id)) {
-        return interaction.reply({
-          content: "💀 Master mode is active. Buttons are owner-only right now.",
-          ephemeral: true
-        });
+        return interaction.reply({ content: "💀 Master mode is active. Buttons are owner-only right now.", ephemeral: true });
       }
 
       if (interaction.customId === "buyer_start") {
@@ -939,15 +1048,10 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isStringSelectMenu()) {
       if (botMode === "master" && !isOwner(interaction.user.id)) {
-        return interaction.reply({
-          content: "💀 Master mode is active. I only listen to my owner.",
-          ephemeral: true
-        });
+        return interaction.reply({ content: "💀 Master mode is active. I only listen to my owner.", ephemeral: true });
       }
 
-      if (interaction.customId === "buyer_category") {
-        return itemMenu(interaction, interaction.values[0]);
-      }
+      if (interaction.customId === "buyer_category") return itemMenu(interaction, interaction.values[0]);
 
       if (interaction.customId.startsWith("buyer_item_")) {
         const category = interaction.customId.replace("buyer_item_", "");
@@ -957,17 +1061,12 @@ client.on("interactionCreate", async interaction => {
         return amountModal(interaction, category, itemName);
       }
 
-      if (interaction.customId === "mm_size") {
-        return traderSelectMenu(interaction, interaction.values[0]);
-      }
+      if (interaction.customId === "mm_size") return traderSelectMenu(interaction, interaction.values[0]);
     }
 
     if (interaction.isUserSelectMenu()) {
       if (botMode === "master" && !isOwner(interaction.user.id)) {
-        return interaction.reply({
-          content: "💀 Master mode is active. Nice try.",
-          ephemeral: true
-        });
+        return interaction.reply({ content: "💀 Master mode is active. Nice try.", ephemeral: true });
       }
 
       if (interaction.customId.startsWith("mm_trader_")) {
@@ -975,10 +1074,7 @@ client.on("interactionCreate", async interaction => {
         const traderId = interaction.values[0];
 
         if (traderId === interaction.user.id) {
-          return interaction.reply({
-            content: "😭 You cannot select yourself as the other trader.",
-            ephemeral: true
-          });
+          return interaction.reply({ content: "😭 You cannot select yourself as the other trader.", ephemeral: true });
         }
 
         await addUserToTicket(interaction.channel, traderId);
@@ -988,10 +1084,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isModalSubmit()) {
       if (botMode === "master" && !isOwner(interaction.user.id)) {
-        return interaction.reply({
-          content: "💀 Master mode is active. Modal denied.",
-          ephemeral: true
-        });
+        return interaction.reply({ content: "💀 Master mode is active. Modal denied.", ephemeral: true });
       }
 
       if (interaction.customId.startsWith("buyer_other_")) {
