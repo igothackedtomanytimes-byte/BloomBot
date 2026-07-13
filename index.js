@@ -1,6 +1,10 @@
+
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
+
 const {
   Client,
   GatewayIntentBits,
@@ -16,14 +20,21 @@ const {
   TextInputStyle,
   SlashCommandBuilder,
   REST,
-  Routes
+  Routes,
+  PermissionFlagsBits
 } = require("discord.js");
 
+// ======================================================
+// BLOOM BOT — ONE FILE VERSION
+// ======================================================
+
+// ----------------------
 // WEB SERVER FOR RENDER
+// ----------------------
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get("/", (req, res) => {
+app.get("/", (_req, res) => {
   res.send("Bloom Bot is online.");
 });
 
@@ -31,12 +42,22 @@ app.listen(PORT, () => {
   console.log(`🌐 Web server running on port ${PORT}`);
 });
 
+// ----------------------
 // ENV
+// ----------------------
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
+const PAYPAL_EMAIL = process.env.PAYPAL_EMAIL || "Ask the owner for the PayPal email.";
 
-// IDS
+if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
+  console.error("❌ Missing TOKEN, CLIENT_ID, or GUILD_ID in .env");
+  process.exit(1);
+}
+
+// ----------------------
+// IMPORTANT IDS
+// ----------------------
 const OWNER_ID = "1442212943470264320";
 
 const BUYER_CATEGORY_ID = "1524567770002489584";
@@ -52,7 +73,9 @@ const REVIEW_ROLE_ID = "1516084407528722604";
 const BUYER_VOUCH_CHANNEL_ID = "1516081257547825232";
 const MM_VOUCH_CHANNEL_ID = "1523533160506327090";
 
+// ----------------------
 // CLIENT
+// ----------------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -62,76 +85,151 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// TEMP DATABASE
-// This resets when bot restarts. Later we can make it save to JSON.
-const ticketClaims = new Map();
-// channelId -> { userId, type }
+// ======================================================
+// SIMPLE JSON DATABASE
+// ======================================================
+const DATABASE_PATH = path.join(__dirname, "bloombot-data.json");
 
-const vouchCompletedTickets = new Set();
-
-const applications = new Map();
-// userId -> application part 1 data
-
-const storeCredits = new Map();
-// userId -> number
-
-const discountCodes = new Map();
-/*
-CODE -> {
-  code,
-  type: "percent" | "dollar",
-  amount,
-  maxUses,
-  used,
-  createdBy
+function defaultDatabase() {
+  return {
+    credits: {},
+    discounts: {},
+    carts: {},
+    claims: {},
+    orders: {},
+    mmTickets: {},
+    applications: {},
+    vouchedTickets: [],
+    orderCounter: 1000
+  };
 }
-*/
 
+function loadDatabase() {
+  try {
+    if (!fs.existsSync(DATABASE_PATH)) {
+      const fresh = defaultDatabase();
+      fs.writeFileSync(DATABASE_PATH, JSON.stringify(fresh, null, 2));
+      return fresh;
+    }
+
+    const parsed = JSON.parse(fs.readFileSync(DATABASE_PATH, "utf8"));
+    return {
+      ...defaultDatabase(),
+      ...parsed
+    };
+  } catch (error) {
+    console.error("Database load error:", error);
+    return defaultDatabase();
+  }
+}
+
+let db = loadDatabase();
+
+function saveDatabase() {
+  try {
+    fs.writeFileSync(DATABASE_PATH, JSON.stringify(db, null, 2));
+  } catch (error) {
+    console.error("Database save error:", error);
+  }
+}
+
+function editDatabase(callback) {
+  callback(db);
+  saveDatabase();
+}
+
+// ======================================================
 // PRICE LIST
+// ======================================================
 const priceList = {
   seeds: {
-    "20x Mega Seed": 1,
-    "3x Ghost Pepper": 1,
-    "3x Hypno Bloom": 1,
-    "3x Moon Bloom": 1,
-    "4x Dragon Breath": 2,
-    "Carrots": 0.1,
-    "Bamboo": 0.1,
-    "20x Rainbow Seed": 1,
-    "40x Gold Seed": 1
+    "Carrot Seed": 0.10,
+    "Strawberry Seed": 0.10,
+    "Blueberry Seed": 0.10,
+    "Tulip Seed": 0.10,
+    "Tomato Seed": 0.10,
+    "Apple Seed": 0.10,
+    "Bamboo Seed": 0.10,
+    "Corn Seed": 0.10,
+    "Cactus Seed": 0.10,
+    "Pineapple Seed": 0.10,
+    "Mushroom Seed": 0.10,
+    "Glow Mushroom Seed": 0.10,
+    "Green Bean Seed": 0.10,
+    "Banana Seed": 0.10,
+    "Grape Seed": 0.10,
+    "Coconut Seed": 0.10,
+    "Mango Seed": 0.10,
+    "Acorn Seed": 0.10,
+    "Cherry Seed": 0.10,
+    "Dragon Fruit Seed": 0.10,
+    "Sunflower Seed": 0.10,
+    "Venus Fly Trap Seed": 0.10,
+    "Pomegranate Seed": 0.10,
+    "Poison Ivy Seed": 0.10,
+    "Poison Apple Seed": 0.10,
+    "Baby Cactus Seed": 0.10,
+    "Rocket Pop Seed": 0.10,
+
+    "Mega Seed": 0.05,
+    "Rainbow Seed": 0.05,
+    "Gold Seed": 0.025,
+
+    "Hypno Bloom Seed": 1 / 3,
+    "Moon Bloom Seed": 1 / 3,
+
+    "Ghost Pepper Seed": 0.50,
+    "Dragon's Breath Seed": 0.50,
+    "Venom Spitter Seed": 0.30
   },
-  gear: {
-    "8x Super Watering Can": 1,
-    "8x Super Sprinkler": 1
-  },
+
   pets: {
-    "Black Dragon": 69,
-    "Raccoon": 3,
-    "3x Dragonfly": 1,
-    "3x Unicorn": 1,
-    "Ice Serpent": 55,
-    "3x Bear": 1,
-    "3x Bald Eagle": 1,
-    "Butterfly": 2,
-    "Bee": 0.1,
-    "Big Bunny": 0.5,
-    "Rainbow Bunny": 0.5
+    "Black Dragon": 69.00,
+    "Raccoon": 3.00,
+    "Golden Dragonfly": 1 / 3,
+    "Unicorn": 1 / 3,
+    "Ice Serpent": 55.00,
+    "Bear": 1 / 3,
+    "Bald Eagle": 1 / 3,
+    "Butterfly": 2.00,
+    "Bee": 0.10,
+    "Big Bunny": 0.50,
+    "Rainbow Bunny": 0.50,
+    "Frog": 0.10,
+    "Bunny": 0.10,
+    "Owl": 0.10,
+    "Deer": 0.10,
+    "Robin": 0.10,
+    "Turtle": 0.10
   }
 };
 
+// ======================================================
 // HELPERS
+// ======================================================
 function isOwner(userId) {
   return userId === OWNER_ID;
 }
 
-function money(n) {
-  return `$${Number(n || 0).toFixed(2)}`;
+function hasRole(interaction, roleId) {
+  return Boolean(interaction.member?.roles?.cache?.has(roleId));
 }
 
-function cleanAmount(raw) {
-  const n = Number(raw);
-  if (isNaN(n) || n <= 0) return 1;
-  return n;
+function isSeller(interaction) {
+  return isOwner(interaction.user.id) || hasRole(interaction, SELLER_ROLE_ID);
+}
+
+function isAnyMM(interaction) {
+  return (
+    isOwner(interaction.user.id) ||
+    hasRole(interaction, NEW_MM_ROLE_ID) ||
+    hasRole(interaction, MM_ROLE_ID) ||
+    hasRole(interaction, TRUSTED_MM_ROLE_ID)
+  );
+}
+
+function isReviewer(interaction) {
+  return isOwner(interaction.user.id) || hasRole(interaction, REVIEW_ROLE_ID);
 }
 
 function isBuyerTicket(channel) {
@@ -149,49 +247,33 @@ function isApplicationTicket(channel) {
   );
 }
 
-function onlyStaff(member) {
-  if (!member) return false;
-
-  return (
-    member.roles.cache.has(SELLER_ROLE_ID) ||
-    member.roles.cache.has(NEW_MM_ROLE_ID) ||
-    member.roles.cache.has(MM_ROLE_ID) ||
-    member.roles.cache.has(TRUSTED_MM_ROLE_ID)
-  );
+function money(number) {
+  return `$${Number(number || 0).toFixed(2)}`;
 }
 
-function staffOrOwner(interaction) {
-  return isOwner(interaction.user.id) || onlyStaff(interaction.member);
-}
-
-function sellerOrOwner(interaction) {
-  return isOwner(interaction.user.id) || interaction.member.roles.cache.has(SELLER_ROLE_ID);
-}
-
-function mmOrOwner(interaction) {
-  return (
-    isOwner(interaction.user.id) ||
-    interaction.member.roles.cache.has(NEW_MM_ROLE_ID) ||
-    interaction.member.roles.cache.has(MM_ROLE_ID) ||
-    interaction.member.roles.cache.has(TRUSTED_MM_ROLE_ID)
-  );
-}
-
-function deny() {
-  return "🚫 You do not have permission to use this.";
-}
-
-function ownerDeny() {
-  return "👑 Only the server owner can use this command.";
-}
-
-function premiumEmbed(title, description, color = 0x2ecc71) {
+function premiumEmbed(title, description, color = 0x5865f2) {
   return new EmbedBuilder()
     .setTitle(title)
     .setDescription(description)
     .setColor(color)
     .setTimestamp()
-    .setFooter({ text: "Bloom Bot • Premium Ticket System" });
+    .setFooter({ text: "Bloom Bot • Secure Shop & Middleman" });
+}
+
+function ephemeral(content) {
+  return {
+    content,
+    ephemeral: true
+  };
+}
+
+function safeWholeNumber(raw, min = 1, max = 100000) {
+  const number = Number(raw);
+
+  if (!Number.isInteger(number)) return null;
+  if (number < min || number > max) return null;
+
+  return number;
 }
 
 async function addUserToTicket(channel, userId) {
@@ -203,44 +285,79 @@ async function addUserToTicket(channel, userId) {
       AttachFiles: true,
       EmbedLinks: true
     });
+
     return true;
-  } catch (err) {
-    console.log("Add user failed:", err.message);
+  } catch (error) {
+    console.error("Add user error:", error);
     return false;
   }
 }
 
 function getClaim(channelId) {
-  return ticketClaims.get(channelId) || null;
+  return db.claims[channelId] || null;
 }
 
 function setClaim(channelId, userId, type) {
-  ticketClaims.set(channelId, { userId, type });
+  editDatabase(database => {
+    database.claims[channelId] = {
+      userId,
+      type,
+      claimedAt: Date.now()
+    };
+  });
 }
 
-function hasClaim(channelId) {
-  return ticketClaims.has(channelId);
+function removeClaim(channelId) {
+  editDatabase(database => {
+    delete database.claims[channelId];
+
+    if (database.mmTickets[channelId]) {
+      database.mmTickets[channelId].claimedBy = null;
+      database.mmTickets[channelId].claimedAt = null;
+    }
+  });
 }
 
-// STORE CREDIT
+function claimedByOrOwner(interaction, claim) {
+  return isOwner(interaction.user.id) || claim?.userId === interaction.user.id;
+}
+
+// ======================================================
+// CREDIT SYSTEM
+// ======================================================
 function getCredit(userId) {
-  return Number(storeCredits.get(userId) || 0);
+  return Number(db.credits[userId] || 0);
+}
+
+function setCredit(userId, amount) {
+  const cleanAmount = Math.max(0, Number(amount || 0));
+
+  editDatabase(database => {
+    database.credits[userId] = cleanAmount;
+  });
+
+  return getCredit(userId);
 }
 
 function addCredit(userId, amount) {
-  const next = getCredit(userId) + Number(amount || 0);
-  storeCredits.set(userId, Math.max(0, next));
-  return getCredit(userId);
+  return setCredit(userId, getCredit(userId) + Number(amount || 0));
 }
 
 function removeCredit(userId, amount) {
-  const next = getCredit(userId) - Number(amount || 0);
-  storeCredits.set(userId, Math.max(0, next));
-  return getCredit(userId);
+  return setCredit(userId, getCredit(userId) - Number(amount || 0));
 }
 
-// DISCOUNT CODES
-function createDiscountCode(code, type, amount, maxUses, createdBy) {
+// ======================================================
+// DISCOUNT SYSTEM
+// ======================================================
+function createDiscountCode({
+  code,
+  type,
+  amount,
+  maxUses,
+  perUserLimit,
+  createdBy
+}) {
   const cleanCode = code.toUpperCase().trim();
 
   const data = {
@@ -248,145 +365,126 @@ function createDiscountCode(code, type, amount, maxUses, createdBy) {
     type,
     amount: Number(amount),
     maxUses: Number(maxUses),
+    perUserLimit: Number(perUserLimit),
     used: 0,
-    createdBy
+    users: {},
+    active: true,
+    createdBy,
+    createdAt: Date.now()
   };
 
-  discountCodes.set(cleanCode, data);
+  editDatabase(database => {
+    database.discounts[cleanCode] = data;
+  });
+
   return data;
 }
 
 function getDiscountCode(code) {
   if (!code) return null;
-  return discountCodes.get(code.toUpperCase().trim()) || null;
+
+  return db.discounts[code.toUpperCase().trim()] || null;
 }
 
-function canUseDiscount(codeData) {
+function canUseDiscount(codeData, userId) {
   if (!codeData) return false;
-  return codeData.used < codeData.maxUses;
+  if (!codeData.active) return false;
+  if (codeData.used >= codeData.maxUses) return false;
+
+  const usedByUser = Number(codeData.users?.[userId] || 0);
+
+  return usedByUser < Number(codeData.perUserLimit || 1);
 }
 
-function calculateDiscount(total, codeData) {
-  if (!codeData || !canUseDiscount(codeData)) {
-    return {
-      discountAmount: 0,
-      text: "No discount"
-    };
-  }
-
-  let discountAmount = 0;
+function calculateDiscount(total, codeData, userId) {
+  if (!canUseDiscount(codeData, userId)) return 0;
 
   if (codeData.type === "percent") {
-    discountAmount = total * (codeData.amount / 100);
+    return Math.min(total, total * (codeData.amount / 100));
   }
 
-  if (codeData.type === "dollar") {
-    discountAmount = codeData.amount;
-  }
-
-  discountAmount = Math.min(total, discountAmount);
-
-  return {
-    discountAmount,
-    text: codeData.type === "percent"
-      ? `${codeData.amount}% off`
-      : `${money(codeData.amount)} off`
-  };
+  return Math.min(total, codeData.amount);
 }
 
-function calculateOrderTotal({ price, quantity, discountCode, buyerId, useCredit }) {
-  if (price === null || price === undefined) {
-    return {
-      originalTotal: null,
-      discountAmount: 0,
-      creditUsed: 0,
-      finalTotal: null,
-      codeData: null,
-      discountText: "Custom item — seller will price it"
-    };
-  }
+function consumeDiscount(code, userId) {
+  const cleanCode = code.toUpperCase().trim();
 
-  const originalTotal = Number(price) * Number(quantity);
-  const codeData = getDiscountCode(discountCode);
-  const discount = calculateDiscount(originalTotal, codeData);
+  editDatabase(database => {
+    const discount = database.discounts[cleanCode];
 
-  let afterDiscount = Math.max(0, originalTotal - discount.discountAmount);
-  let creditUsed = 0;
+    if (!discount) return;
 
-  if (useCredit) {
-    creditUsed = Math.min(getCredit(buyerId), afterDiscount);
-    afterDiscount = Math.max(0, afterDiscount - creditUsed);
-  }
-
-  return {
-    originalTotal,
-    discountAmount: discount.discountAmount,
-    creditUsed,
-    finalTotal: afterDiscount,
-    codeData,
-    discountText: discount.text
-  };
+    discount.used += 1;
+    discount.users[userId] = Number(discount.users[userId] || 0) + 1;
+  });
 }
 
-// DISCOUNT MODAL
-async function discountCreateModal(interaction) {
-  const modal = new ModalBuilder()
-    .setCustomId("discount_create_modal")
-    .setTitle("Create Discount Code");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("code")
-        .setLabel("Discount Code")
-        .setPlaceholder("Example: SAVE10")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("type")
-        .setLabel("Type: percent or dollar")
-        .setPlaceholder("percent OR dollar")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("amount")
-        .setLabel("Amount")
-        .setPlaceholder("10 = 10% or $10 depending on type")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("uses")
-        .setLabel("How many times can it be used?")
-        .setPlaceholder("Example: 5")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    )
-  );
-
-  return interaction.showModal(modal);
+// ======================================================
+// SHOP CART SYSTEM
+// ======================================================
+function getCart(userId) {
+  return db.carts[userId] || [];
 }
-// =======================
-// BUYER SYSTEM
-// =======================
 
-function buyerPanel() {
+function saveCart(userId, cart) {
+  editDatabase(database => {
+    database.carts[userId] = cart;
+  });
+}
+
+function clearCart(userId) {
+  saveCart(userId, []);
+}
+
+function addToCart(userId, category, itemName, quantity) {
+  const cart = [...getCart(userId)];
+
+  const existing = cart.find(item => {
+    return item.category === category && item.name === itemName;
+  });
+
+  if (existing) {
+    existing.quantity += quantity;
+  } else {
+    cart.push({
+      category,
+      name: itemName,
+      quantity,
+      unitPrice: priceList[category][itemName]
+    });
+  }
+
+  saveCart(userId, cart);
+}
+
+function removeCartItem(userId, index) {
+  const cart = [...getCart(userId)];
+
+  if (index >= 0 && index < cart.length) {
+    cart.splice(index, 1);
+  }
+
+  saveCart(userId, cart);
+}
+
+function calculateCartSubtotal(cart) {
+  return cart.reduce((sum, item) => {
+    return sum + item.unitPrice * item.quantity;
+  }, 0);
+}
+
+function shopPanel() {
   const embed = premiumEmbed(
-    "🛒 Purchase Ticket",
+    "🛒 Bloom Shop",
     [
-      "Welcome to your purchase ticket.",
+      "Build one order with **multiple seeds and pets**.",
       "",
-      "Click **Start Order** and Bloom Bot will guide you step by step.",
-      "",
-      "✅ Clear order form",
-      "✅ Auto prices",
+      "✅ Add as many items as you need",
+      "✅ Mix seeds and pets in the same order",
+      "✅ Automatic total calculation",
       "✅ Discount codes",
       "✅ Store credit",
+      "✅ PayPal only",
       "✅ Required vouch after delivery"
     ].join("\n"),
     0x2ecc71
@@ -394,119 +492,213 @@ function buyerPanel() {
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("buyer_start")
-      .setLabel("Start Order")
+      .setCustomId("shop_add_seed")
+      .setLabel("Add Seed")
+      .setEmoji("🌱")
+      .setStyle(ButtonStyle.Success),
+
+    new ButtonBuilder()
+      .setCustomId("shop_add_pet")
+      .setLabel("Add Pet")
+      .setEmoji("🐾")
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId("shop_view_cart")
+      .setLabel("View Cart")
       .setEmoji("🛒")
-      .setStyle(ButtonStyle.Success)
+      .setStyle(ButtonStyle.Secondary),
+
+    new ButtonBuilder()
+      .setCustomId("shop_clear_cart")
+      .setLabel("Clear Cart")
+      .setEmoji("🗑️")
+      .setStyle(ButtonStyle.Danger)
   );
 
-  return { embeds: [embed], components: [row] };
+  return {
+    embeds: [embed],
+    components: [row]
+  };
 }
 
-async function buyerCategoryMenu(interaction) {
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("buyer_category")
-    .setPlaceholder("Choose a category")
+function shopItemMenu(category, page = 0) {
+  const allItems = Object.keys(priceList[category]);
+  const pageSize = 24;
+  const totalPages = Math.max(1, Math.ceil(allItems.length / pageSize));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+  const start = safePage * pageSize;
+  const pageItems = allItems.slice(start, start + pageSize);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`shop_pick_${category}_${safePage}`)
+    .setPlaceholder(
+      category === "seeds" ? "Choose a seed" : "Choose a pet"
+    )
     .addOptions(
-      { label: "Seeds", value: "seeds", emoji: "🌱" },
-      { label: "Gear", value: "gear", emoji: "🛠️" },
-      { label: "Pets", value: "pets", emoji: "🐾" },
-      { label: "Other", value: "other", emoji: "❓" }
+      pageItems.map(itemName => ({
+        label: itemName.slice(0, 100),
+        value: itemName,
+        description: `${money(priceList[category][itemName])} each`
+      }))
     );
 
-  return interaction.reply({
-    content: "🛒 What do you want to buy?",
-    components: [new ActionRowBuilder().addComponents(menu)],
-    ephemeral: true
-  });
-}
+  const rows = [
+    new ActionRowBuilder().addComponents(select)
+  ];
 
-async function buyerItemMenu(interaction, category) {
-  if (category === "other") {
-    return buyerOrderModal(interaction, "other", "Custom Item", null);
+  const navigationRow = new ActionRowBuilder();
+
+  if (safePage > 0) {
+    navigationRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`shop_page_${category}_${safePage - 1}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+    );
   }
 
-  const options = Object.entries(priceList[category]).map(([name, price]) => ({
-    label: name,
-    value: name,
-    description: `Price: ${money(price)}`
-  }));
+  if (safePage < totalPages - 1) {
+    navigationRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`shop_page_${category}_${safePage + 1}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
 
-  options.push({
-    label: "Other",
-    value: "Other",
-    description: "Type your own item"
-  });
+  if (navigationRow.components.length > 0) {
+    rows.push(navigationRow);
+  }
 
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId(`buyer_item_${category}`)
-    .setPlaceholder("Choose an item")
-    .addOptions(options.slice(0, 25));
-
-  return interaction.reply({
-    content: "📦 Choose the item:",
-    components: [new ActionRowBuilder().addComponents(menu)],
+  return {
+    content: `Page ${safePage + 1}/${totalPages}`,
+    components: rows,
     ephemeral: true
-  });
+  };
 }
 
-async function buyerOrderModal(interaction, category, itemName, itemPrice) {
-  const encodedItem = Buffer.from(itemName || "Custom Item").toString("base64");
-  const encodedPrice = itemPrice === null || itemPrice === undefined ? "custom" : String(itemPrice);
+function quantityModal(category, itemName) {
+  const encodedName = Buffer.from(itemName, "utf8").toString("base64");
 
   const modal = new ModalBuilder()
-    .setCustomId(`buyer_order_${category}_${encodedPrice}_${encodedItem}`)
-    .setTitle("Order Details");
+    .setCustomId(`shop_quantity_${category}_${encodedName}`)
+    .setTitle("Add Item");
 
-  const rows = [];
-
-  if (itemName === "Custom Item") {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("custom_item")
-          .setLabel("What item do you want?")
-          .setPlaceholder("Example: Rainbow Butterfly")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-      )
-    );
-  }
-
-  rows.push(
+  modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("amount")
-        .setLabel("How many?")
+        .setCustomId("quantity")
+        .setLabel("Quantity")
         .setPlaceholder("Example: 1, 5, 20")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     )
   );
 
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("payment")
-        .setLabel("Payment method")
-        .setPlaceholder("PayPal / Gift Card / Crypto / Other")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    )
+  return modal;
+}
+
+function buildCartEmbed(userId) {
+  const cart = getCart(userId);
+
+  if (cart.length === 0) {
+    return premiumEmbed(
+      "🛒 Your Cart",
+      "Your cart is empty.",
+      0xf1c40f
+    );
+  }
+
+  const seedLines = [];
+  const petLines = [];
+
+  cart.forEach((item, index) => {
+    const line = `**${index + 1}.** ${item.name} ×${item.quantity} — ${money(item.unitPrice * item.quantity)}`;
+
+    if (item.category === "seeds") {
+      seedLines.push(line);
+    } else {
+      petLines.push(line);
+    }
+  });
+
+  const sections = [];
+
+  if (seedLines.length > 0) {
+    sections.push(`**🌱 Seeds**\n${seedLines.join("\n")}`);
+  }
+
+  if (petLines.length > 0) {
+    sections.push(`**🐾 Pets**\n${petLines.join("\n")}`);
+  }
+
+  sections.push(
+    `\n**Subtotal: ${money(calculateCartSubtotal(cart))}**`
   );
 
-  rows.push(
+  return premiumEmbed(
+    "🛒 Your Cart",
+    sections.join("\n\n"),
+    0x2ecc71
+  );
+}
+
+function cartButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("shop_remove_item")
+      .setLabel("Remove Item")
+      .setEmoji("➖")
+      .setStyle(ButtonStyle.Secondary),
+
+    new ButtonBuilder()
+      .setCustomId("shop_checkout")
+      .setLabel("Checkout")
+      .setEmoji("💳")
+      .setStyle(ButtonStyle.Success),
+
+    new ButtonBuilder()
+      .setCustomId("shop_clear_cart")
+      .setLabel("Clear")
+      .setEmoji("🗑️")
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+function removeItemMenu(userId) {
+  const cart = getCart(userId);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("shop_remove_select")
+    .setPlaceholder("Choose an item to remove")
+    .addOptions(
+      cart.slice(0, 25).map((item, index) => ({
+        label: `${item.name} ×${item.quantity}`.slice(0, 100),
+        value: String(index),
+        description: money(item.unitPrice * item.quantity)
+      }))
+    );
+
+  return new ActionRowBuilder().addComponents(select);
+}
+
+function checkoutModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("shop_checkout_modal")
+    .setTitle("Checkout");
+
+  modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("discount")
         .setLabel("Discount code")
-        .setPlaceholder("Optional. Example: SAVE10")
+        .setPlaceholder("Optional")
         .setStyle(TextInputStyle.Short)
         .setRequired(false)
-    )
-  );
+    ),
 
-  rows.push(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("credit")
@@ -517,8 +709,7 @@ async function buyerOrderModal(interaction, category, itemName, itemPrice) {
     )
   );
 
-  modal.addComponents(...rows.slice(0, 5));
-  return interaction.showModal(modal);
+  return modal;
 }
 
 function orderButtons() {
@@ -549,50 +740,118 @@ function orderButtons() {
   );
 }
 
-async function sendOrderSummary(interaction, data) {
-  const orderId = Math.floor(100000 + Math.random() * 900000);
+async function createOrderFromCart(interaction) {
+  const cart = getCart(interaction.user.id);
 
-  const calc = calculateOrderTotal({
-    price: data.price,
-    quantity: data.amount,
-    discountCode: data.discountCode,
-    buyerId: interaction.user.id,
-    useCredit: data.useCredit
+  if (cart.length === 0) {
+    return interaction.reply(ephemeral("❌ Your cart is empty."));
+  }
+
+  const discountCode = (
+    interaction.fields.getTextInputValue("discount") || ""
+  ).trim().toUpperCase();
+
+  const useCredit = (
+    interaction.fields.getTextInputValue("credit") || ""
+  ).toLowerCase().includes("yes");
+
+  const subtotal = calculateCartSubtotal(cart);
+  const discountData = getDiscountCode(discountCode);
+  const discountAmount = calculateDiscount(
+    subtotal,
+    discountData,
+    interaction.user.id
+  );
+
+  const afterDiscount = Math.max(0, subtotal - discountAmount);
+
+  const creditUsed = useCredit
+    ? Math.min(getCredit(interaction.user.id), afterDiscount)
+    : 0;
+
+  const finalTotal = Math.max(0, afterDiscount - creditUsed);
+
+  if (discountAmount > 0) {
+    consumeDiscount(discountCode, interaction.user.id);
+  }
+
+  if (creditUsed > 0) {
+    removeCredit(interaction.user.id, creditUsed);
+  }
+
+  let orderId;
+
+  editDatabase(database => {
+    database.orderCounter += 1;
+    orderId = database.orderCounter;
+
+    database.orders[interaction.channel.id] = {
+      orderId,
+      buyerId: interaction.user.id,
+      items: cart,
+      subtotal,
+      discountCode,
+      discountAmount,
+      creditUsed,
+      finalTotal,
+      status: "waiting_for_seller",
+      createdAt: Date.now()
+    };
+
+    database.carts[interaction.user.id] = [];
   });
 
-  if (calc.codeData && canUseDiscount(calc.codeData)) {
-    calc.codeData.used += 1;
-  }
-
-  if (calc.creditUsed > 0) {
-    removeCredit(interaction.user.id, calc.creditUsed);
-  }
-
-  let priceText = "Seller will provide price for this custom item.";
-
-  if (calc.originalTotal !== null) {
-    priceText = [
-      `Original Total: **${money(calc.originalTotal)}**`,
-      `Discount: **-${money(calc.discountAmount)}**`,
-      `Store Credit Used: **-${money(calc.creditUsed)}**`,
-      `Final Total: **${money(calc.finalTotal)}**`
-    ].join("\n");
-  }
+  const itemLines = cart
+    .map(item => {
+      return `${item.name} ×${item.quantity} — ${money(item.unitPrice * item.quantity)}`;
+    })
+    .join("\n");
 
   const embed = premiumEmbed(
     `🛒 Order #${orderId}`,
-    "A new order has been created. A seller should claim this ticket before helping.",
+    "A seller must claim this order before helping.",
     0x2ecc71
   ).addFields(
-    { name: "👤 Buyer", value: `${interaction.user}\n${interaction.user.username}`, inline: false },
-    { name: "📦 Category", value: data.category, inline: true },
-    { name: "🛍️ Item", value: data.item, inline: true },
-    { name: "🔢 Amount", value: String(data.amount), inline: true },
-    { name: "💰 Price", value: priceText, inline: false },
-    { name: "🎟️ Discount Code", value: data.discountCode || "None", inline: true },
-    { name: "🏦 Store Credit Left", value: money(getCredit(interaction.user.id)), inline: true },
-    { name: "💳 Payment", value: data.payment, inline: false },
-    { name: "📌 Status", value: "🟡 Waiting for Seller", inline: false }
+    {
+      name: "👤 Buyer",
+      value: `${interaction.user}\n${interaction.user.username}`,
+      inline: false
+    },
+    {
+      name: "📦 Items",
+      value: itemLines.slice(0, 1024),
+      inline: false
+    },
+    {
+      name: "💵 Subtotal",
+      value: money(subtotal),
+      inline: true
+    },
+    {
+      name: "🎟️ Discount",
+      value: `-${money(discountAmount)}`,
+      inline: true
+    },
+    {
+      name: "🏦 Store Credit",
+      value: `-${money(creditUsed)}`,
+      inline: true
+    },
+    {
+      name: "💰 Final Total",
+      value: money(finalTotal),
+      inline: false
+    },
+    {
+      name: "💳 Payment",
+      value: `PayPal only\n${PAYPAL_EMAIL}`,
+      inline: false
+    },
+    {
+      name: "📌 Status",
+      value: "🟡 Waiting for Seller",
+      inline: false
+    }
   );
 
   await interaction.channel.send({
@@ -601,30 +860,26 @@ async function sendOrderSummary(interaction, data) {
     components: [orderButtons()]
   });
 
-  return interaction.reply({
-    content: "✅ Your order was created. A seller will help you soon.",
-    ephemeral: true
-  });
+  return interaction.reply(
+    ephemeral("✅ Order created. A seller will help you soon.")
+  );
 }
 
-// =======================
+// ======================================================
 // MM SYSTEM
-// =======================
-
+// ======================================================
 function mmPanel() {
   const embed = premiumEmbed(
     "🛡️ Middleman Ticket",
     [
-      "Welcome to your MM ticket.",
+      "Create a secure trade request.",
       "",
-      "Click **Start MM Request** and Bloom Bot will guide you.",
-      "",
-      "✅ Select the other trader",
-      "✅ Bot adds them to this ticket",
-      "✅ Trade size system",
-      "✅ Claim lock so MMs do not fight",
-      "✅ MM payment needed button",
-      "✅ Required vouch after trade"
+      "✅ Correct MM tier only",
+      "✅ One MM claim only",
+      "✅ Nobody can cut over another MM",
+      "✅ MM fees are **in-game items only**",
+      "✅ Owner can override any claim",
+      "✅ Required MM vouch"
     ].join("\n"),
     0x5865f2
   );
@@ -637,39 +892,53 @@ function mmPanel() {
       .setStyle(ButtonStyle.Primary)
   );
 
-  return { embeds: [embed], components: [row] };
+  return {
+    embeds: [embed],
+    components: [row]
+  };
 }
 
 function mmSizeMenu() {
-  const menu = new StringSelectMenuBuilder()
+  const select = new StringSelectMenuBuilder()
     .setCustomId("mm_size")
     .setPlaceholder("Choose trade size")
     .addOptions(
-      { label: "Small Trade", value: "small", emoji: "🔹", description: "Pings New MM" },
-      { label: "Normal Trade", value: "normal", emoji: "🔸", description: "Pings MM" },
-      { label: "Huge Trade", value: "huge", emoji: "🔶", description: "Pings Trusted MM" }
+      {
+        label: "Small Trade",
+        value: "small",
+        emoji: "🔹",
+        description: "New MM"
+      },
+      {
+        label: "Normal Trade",
+        value: "normal",
+        emoji: "🔸",
+        description: "MM"
+      },
+      {
+        label: "Huge Trade",
+        value: "huge",
+        emoji: "🔶",
+        description: "Trusted MM"
+      }
     );
 
-  return new ActionRowBuilder().addComponents(menu);
+  return new ActionRowBuilder().addComponents(select);
 }
 
-async function mmTraderSelect(interaction, size) {
-  const menu = new UserSelectMenuBuilder()
+function mmTraderMenu(size) {
+  const select = new UserSelectMenuBuilder()
     .setCustomId(`mm_trader_${size}`)
     .setPlaceholder("Select the other trader")
     .setMinValues(1)
     .setMaxValues(1);
 
-  return interaction.reply({
-    content: "👤 Select the **other trader**. Bloom Bot will add them to this ticket.",
-    components: [new ActionRowBuilder().addComponents(menu)],
-    ephemeral: true
-  });
+  return new ActionRowBuilder().addComponents(select);
 }
 
-async function mmTradeModal(interaction, size, traderId) {
+function mmDetailsModal(size, traderId) {
   const modal = new ModalBuilder()
-    .setCustomId(`mm_trade_${size}_${traderId}`)
+    .setCustomId(`mm_details_${size}_${traderId}`)
     .setTitle("MM Trade Details");
 
   modal.addComponents(
@@ -677,24 +946,44 @@ async function mmTradeModal(interaction, size, traderId) {
       new TextInputBuilder()
         .setCustomId("gives1")
         .setLabel("What are YOU giving?")
-        .setPlaceholder("Example: $5 PayPal")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
+
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("gives2")
         .setLabel("What is the OTHER trader giving?")
-        .setPlaceholder("Example: 20x Mega Seeds")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-function mmButtons() {
+function mmRoleForSize(size) {
+  if (size === "huge") {
+    return {
+      roleId: TRUSTED_MM_ROLE_ID,
+      roleName: "Trusted MM"
+    };
+  }
+
+  if (size === "normal") {
+    return {
+      roleId: MM_ROLE_ID,
+      roleName: "MM"
+    };
+  }
+
+  return {
+    roleId: NEW_MM_ROLE_ID,
+    roleName: "New MM"
+  };
+}
+
+function mmActionButtons() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("mm_claim")
@@ -703,9 +992,9 @@ function mmButtons() {
       .setStyle(ButtonStyle.Primary),
 
     new ButtonBuilder()
-      .setCustomId("mm_payment_needed")
-      .setLabel("Payment Needed")
-      .setEmoji("💵")
+      .setCustomId("mm_fee")
+      .setLabel("Set Item Fee")
+      .setEmoji("🎁")
       .setStyle(ButtonStyle.Secondary),
 
     new ButtonBuilder()
@@ -728,107 +1017,42 @@ function mmButtons() {
   );
 }
 
-async function sendMMSummary(interaction, data) {
-  let roleId = NEW_MM_ROLE_ID;
-  let sizeText = "Small Trade";
-  let statusText = "Waiting for New MM";
-
-  if (data.size === "normal") {
-    roleId = MM_ROLE_ID;
-    sizeText = "Normal Trade";
-    statusText = "Waiting for MM";
-  }
-
-  if (data.size === "huge") {
-    roleId = TRUSTED_MM_ROLE_ID;
-    sizeText = "Huge Trade";
-    statusText = "Waiting for Trusted MM";
-  }
-
-  await addUserToTicket(interaction.channel, data.trader2Id);
-
-  const trader2 = await client.users.fetch(data.trader2Id).catch(() => null);
-
-  const embed = premiumEmbed(
-    "🛡️ Middleman Request",
-    "A new middleman request has been created.",
-    0x5865f2
-  ).addFields(
-    { name: "👤 Trader 1", value: `${interaction.user}\n${interaction.user.username}`, inline: true },
-    { name: "👤 Trader 2", value: trader2 ? `${trader2}\n${trader2.username}` : `<@${data.trader2Id}>`, inline: true },
-    { name: "📦 Trader 1 Gives", value: data.gives1, inline: false },
-    { name: "📦 Trader 2 Gives", value: data.gives2, inline: false },
-    { name: "📊 Trade Size", value: sizeText, inline: true },
-    { name: "📌 Status", value: `🟡 ${statusText}`, inline: true },
-    { name: "🛡️ Claimed By", value: "Not claimed yet", inline: false }
-  );
-
-  await interaction.channel.send({
-    content: `<@&${roleId}> New MM request!`,
-    embeds: [embed],
-    components: [mmButtons()]
-  });
-
-  return interaction.reply({
-    content: "✅ MM request created. The other trader was added to this ticket.",
-    ephemeral: true
-  });
-}
-
-async function mmPaymentModal(interaction) {
-  const claim = getClaim(interaction.channel.id);
-
-  if (!claim) {
-    return interaction.reply({
-      content: "⚠️ This MM ticket has not been claimed yet.",
-      ephemeral: true
-    });
-  }
-
-  if (claim.userId !== interaction.user.id && !isOwner(interaction.user.id)) {
-    return interaction.reply({
-      content: `⚠️ Only the claimed MM can use this. Claimed MM: <@${claim.userId}>`,
-      ephemeral: true
-    });
-  }
-
+function mmFeeModal() {
   const modal = new ModalBuilder()
-    .setCustomId("mm_payment_modal")
-    .setTitle("MM Payment Needed");
+    .setCustomId("mm_fee_modal")
+    .setTitle("MM Item Fee");
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("amount")
-        .setLabel("How much payment is needed?")
-        .setPlaceholder("Example: 1.50 or 3")
-        .setStyle(TextInputStyle.Short)
+        .setCustomId("items")
+        .setLabel("In-game items required")
+        .setPlaceholder("Example: 2 Unicorns or 20 Mega Seeds")
+        .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
+
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("reason")
-        .setLabel("Reason / note")
-        .setPlaceholder("Example: MM fee before completing trade")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(false)
+        .setCustomId("payer")
+        .setLabel("Who pays the fee?")
+        .setPlaceholder("Trader 1, Trader 2, or split")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
-// =======================
-// APPLICATION SYSTEM
-// =======================
 
+// ======================================================
+// APPLICATION SYSTEM
+// ======================================================
 function applicationPanel() {
   const embed = premiumEmbed(
     "📝 Staff Applications",
     [
-      "Want to help the server?",
-      "",
-      "Click **Start Application**.",
-      "Then choose what you want to apply for.",
+      "Choose what you want to apply for.",
       "",
       "🛡️ Middleman",
       "👑 Admin"
@@ -844,7 +1068,10 @@ function applicationPanel() {
       .setStyle(ButtonStyle.Primary)
   );
 
-  return { embeds: [embed], components: [row] };
+  return {
+    embeds: [embed],
+    components: [row]
+  };
 }
 
 function applicationChoiceButtons() {
@@ -863,11 +1090,7 @@ function applicationChoiceButtons() {
   );
 }
 
-// =======================
-// MM APPLICATION MODALS
-// =======================
-
-async function mmApplyModalPart1(interaction) {
+function mmApplicationPart1Modal() {
   const modal = new ModalBuilder()
     .setCustomId("mm_apply_part1")
     .setTitle("MM Application Part 1");
@@ -877,7 +1100,6 @@ async function mmApplyModalPart1(interaction) {
       new TextInputBuilder()
         .setCustomId("vouches")
         .setLabel("How many vouches do you have?")
-        .setPlaceholder("Example: 12")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
@@ -885,40 +1107,36 @@ async function mmApplyModalPart1(interaction) {
       new TextInputBuilder()
         .setCustomId("timezone")
         .setLabel("Timezone")
-        .setPlaceholder("Example: GMT+3")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("activity")
-        .setLabel("Daily Activity")
-        .setPlaceholder("Example: 3-5 hours daily")
+        .setLabel("Daily activity")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("server_time")
-        .setLabel("How long in our server?")
-        .setPlaceholder("Example: 2 weeks")
+        .setLabel("How long have you been in the server?")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("active_needed")
+        .setCustomId("available")
         .setLabel("Can you be active when needed?")
-        .setPlaceholder("Yes / No + explain")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-async function mmApplyModalPart2(interaction) {
+function mmApplicationPart2Modal() {
   const modal = new ModalBuilder()
     .setCustomId("mm_apply_part2")
     .setTitle("MM Application Part 2");
@@ -927,34 +1145,30 @@ async function mmApplyModalPart2(interaction) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("experience")
-        .setLabel("Previous MM experience? If yes, where?")
+        .setLabel("Previous MM experience?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("why_mm")
+        .setCustomId("why")
         .setLabel("Why do you want to become MM?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("why_choose")
+        .setCustomId("choose")
         .setLabel("Why should we choose you?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-// =======================
-// ADMIN APPLICATION MODALS
-// =======================
-
-async function adminApplyModalPart1(interaction) {
+function adminApplicationPart1Modal() {
   const modal = new ModalBuilder()
     .setCustomId("admin_apply_part1")
     .setTitle("Admin Application Part 1");
@@ -964,7 +1178,6 @@ async function adminApplyModalPart1(interaction) {
       new TextInputBuilder()
         .setCustomId("age")
         .setLabel("Age")
-        .setPlaceholder("Example: 14")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
@@ -972,40 +1185,36 @@ async function adminApplyModalPart1(interaction) {
       new TextInputBuilder()
         .setCustomId("timezone")
         .setLabel("Timezone")
-        .setPlaceholder("Example: GMT+3")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("activity")
-        .setLabel("Daily Activity")
-        .setPlaceholder("Example: 3-5 hours daily")
+        .setLabel("Daily activity")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("server_time")
-        .setLabel("How long in our server?")
-        .setPlaceholder("Example: 2 weeks")
+        .setLabel("How long have you been in the server?")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("staff_exp")
-        .setLabel("Previous staff/admin experience?")
-        .setPlaceholder("Yes / No + where")
+        .setCustomId("experience")
+        .setLabel("Previous staff experience?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-async function adminApplyModalPart2(interaction) {
+function adminApplicationPart2Modal() {
   const modal = new ModalBuilder()
     .setCustomId("admin_apply_part2")
     .setTitle("Admin Application Part 2");
@@ -1013,110 +1222,117 @@ async function adminApplyModalPart2(interaction) {
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("rule_breaker")
-        .setLabel("What if someone breaks rules?")
+        .setCustomId("rule")
+        .setLabel("What if someone breaks the rules?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("staff_abuse")
-        .setLabel("What if staff abuses power?")
+        .setCustomId("abuse")
+        .setLabel("What if a staff member abuses power?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("why_admin")
+        .setCustomId("why")
         .setLabel("Why do you want admin?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("why_choose")
+        .setCustomId("choose")
         .setLabel("Why should we choose you?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-// =======================
-// APPLICATION RATING
-// =======================
-
-function rateApplication(type, data) {
+function scoreApplication(type, data) {
   let score = 0;
   const notes = [];
 
   if (type === "mm") {
-    const vouchNumber = parseInt(String(data.vouches).replace(/\D/g, "")) || 0;
+    const vouches = parseInt(
+      String(data.vouches || "").replace(/\D/g, "")
+    ) || 0;
 
-    if (vouchNumber >= 25) {
+    if (vouches >= 25) {
       score += 30;
-      notes.push("✅ Very strong vouch count");
-    } else if (vouchNumber >= 15) {
-      score += 24;
       notes.push("✅ Strong vouch count");
-    } else if (vouchNumber >= 8) {
-      score += 16;
+    } else if (vouches >= 10) {
+      score += 20;
       notes.push("🟡 Decent vouch count");
     } else {
       score += 5;
       notes.push("⚠️ Low vouch count");
     }
 
-    if (data.active_needed.toLowerCase().includes("yes")) score += 15;
-    if (data.activity.length >= 6) score += 10;
+    if (data.available.toLowerCase().includes("yes")) score += 15;
+    if (data.activity.length >= 5) score += 10;
     if (data.server_time.length >= 4) score += 10;
     if (data.experience.length >= 20) score += 15;
-    if (data.why_mm.length >= 40) score += 15;
-    if (data.why_choose.length >= 40) score += 15;
+    if (data.why.length >= 30) score += 10;
+    if (data.choose.length >= 30) score += 10;
   }
 
   if (type === "admin") {
-    const ageNum = parseInt(String(data.age).replace(/\D/g, "")) || 0;
+    const age = parseInt(
+      String(data.age || "").replace(/\D/g, "")
+    ) || 0;
 
-    if (ageNum >= 14) {
+    if (age >= 14) {
       score += 15;
-      notes.push("✅ Age looks mature enough");
-    } else if (ageNum >= 12) {
+      notes.push("✅ Mature age range");
+    } else if (age >= 12) {
       score += 8;
-      notes.push("🟡 Young, but possible if responsible");
+      notes.push("🟡 Young, but possible");
     } else {
       score += 2;
       notes.push("⚠️ Very young for admin");
     }
 
-    if (data.activity.length >= 6) score += 10;
+    if (data.activity.length >= 5) score += 10;
     if (data.server_time.length >= 4) score += 10;
-    if (data.staff_exp.length >= 20) score += 15;
-    if (data.rule_breaker.length >= 35) score += 15;
-    if (data.staff_abuse.length >= 35) score += 15;
-    if (data.why_admin.length >= 40) score += 15;
-    if (data.why_choose.length >= 40) score += 15;
+    if (data.experience.length >= 20) score += 15;
+    if (data.rule.length >= 30) score += 15;
+    if (data.abuse.length >= 30) score += 15;
+    if (data.why.length >= 30) score += 10;
+    if (data.choose.length >= 30) score += 10;
   }
 
-  score = Math.max(0, Math.min(100, score));
+  score = Math.min(100, Math.max(0, score));
 
-  if (score >= 80) return { score, rating: "🟢 Strong Application", notes };
-  if (score >= 55) return { score, rating: "🟡 Medium Application", notes };
-  return { score, rating: "🔴 Weak Application", notes };
+  let rating = "🔴 Weak Application";
+
+  if (score >= 80) {
+    rating = "🟢 Strong Application";
+  } else if (score >= 55) {
+    rating = "🟡 Medium Application";
+  }
+
+  return {
+    score,
+    rating,
+    notes
+  };
 }
 
-function appReviewButtons(type) {
+function applicationReviewButtons(type) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`app_accept_${type}`)
+      .setCustomId(`application_accept_${type}`)
       .setLabel("Accept")
       .setEmoji("✅")
       .setStyle(ButtonStyle.Success),
 
     new ButtonBuilder()
-      .setCustomId(`app_deny_${type}`)
+      .setCustomId(`application_deny_${type}`)
       .setLabel("Deny")
       .setEmoji("❌")
       .setStyle(ButtonStyle.Danger)
@@ -1124,43 +1340,114 @@ function appReviewButtons(type) {
 }
 
 async function sendApplication(interaction, type, data) {
-  const result = rateApplication(type, data);
-
-  const title = type === "mm" ? "🛡️ New Middleman Application" : "👑 New Admin Application";
-  const position = type === "mm" ? "Middleman" : "Admin";
+  const result = scoreApplication(type, data);
 
   const embed = premiumEmbed(
-    title,
-    `${interaction.user} submitted an application for **${position}**.`,
+    type === "mm"
+      ? "🛡️ New Middleman Application"
+      : "👑 New Admin Application",
+    `${interaction.user} submitted an application.`,
     type === "mm" ? 0x5865f2 : 0xf1c40f
-  ).addFields(
-    { name: "👤 Applicant", value: `${interaction.user}\n${interaction.user.username}`, inline: false }
+  );
+
+  embed.addFields(
+    {
+      name: "👤 Applicant",
+      value: `${interaction.user}\n${interaction.user.username}`,
+      inline: false
+    }
   );
 
   if (type === "mm") {
     embed.addFields(
-      { name: "🎂 Vouches", value: data.vouches || "None", inline: true },
-      { name: "🌍 Timezone", value: data.timezone || "None", inline: true },
-      { name: "⏰ Daily Activity", value: data.activity || "None", inline: false },
-      { name: "📅 Time in Server", value: data.server_time || "None", inline: false },
-      { name: "📱 Active When Needed?", value: data.active_needed || "None", inline: false },
-      { name: "🤝 Previous MM Experience", value: data.experience || "None", inline: false },
-      { name: "💬 Why Become MM?", value: data.why_mm || "None", inline: false },
-      { name: "⭐ Why Choose Them?", value: data.why_choose || "None", inline: false }
+      {
+        name: "Vouches",
+        value: data.vouches,
+        inline: true
+      },
+      {
+        name: "Timezone",
+        value: data.timezone,
+        inline: true
+      },
+      {
+        name: "Activity",
+        value: data.activity,
+        inline: false
+      },
+      {
+        name: "Time in Server",
+        value: data.server_time,
+        inline: false
+      },
+      {
+        name: "Available?",
+        value: data.available,
+        inline: false
+      },
+      {
+        name: "Experience",
+        value: data.experience,
+        inline: false
+      },
+      {
+        name: "Why MM?",
+        value: data.why,
+        inline: false
+      },
+      {
+        name: "Why Choose Them?",
+        value: data.choose,
+        inline: false
+      }
     );
-  }
-
-  if (type === "admin") {
+  } else {
     embed.addFields(
-      { name: "🎂 Age", value: data.age || "None", inline: true },
-      { name: "🌍 Timezone", value: data.timezone || "None", inline: true },
-      { name: "⏰ Daily Activity", value: data.activity || "None", inline: false },
-      { name: "📅 Time in Server", value: data.server_time || "None", inline: false },
-      { name: "🛡️ Staff Experience", value: data.staff_exp || "None", inline: false },
-      { name: "📜 Rule Breaker Answer", value: data.rule_breaker || "None", inline: false },
-      { name: "⚠️ Staff Abuse Answer", value: data.staff_abuse || "None", inline: false },
-      { name: "💬 Why Admin?", value: data.why_admin || "None", inline: false },
-      { name: "⭐ Why Choose Them?", value: data.why_choose || "None", inline: false }
+      {
+        name: "Age",
+        value: data.age,
+        inline: true
+      },
+      {
+        name: "Timezone",
+        value: data.timezone,
+        inline: true
+      },
+      {
+        name: "Activity",
+        value: data.activity,
+        inline: false
+      },
+      {
+        name: "Time in Server",
+        value: data.server_time,
+        inline: false
+      },
+      {
+        name: "Experience",
+        value: data.experience,
+        inline: false
+      },
+      {
+        name: "Rule Breaker Answer",
+        value: data.rule,
+        inline: false
+      },
+      {
+        name: "Staff Abuse Answer",
+        value: data.abuse,
+        inline: false
+      },
+      {
+        name: "Why Admin?",
+        value: data.why,
+        inline: false
+      },
+      {
+        name: "Why Choose Them?",
+        value: data.choose,
+        inline: false
+      }
     );
   }
 
@@ -1178,32 +1465,20 @@ async function sendApplication(interaction, type, data) {
   );
 
   await interaction.channel.send({
-    content: `<@&${REVIEW_ROLE_ID}> New ${position} application!`,
+    content: `<@&${REVIEW_ROLE_ID}> New application!`,
     embeds: [embed],
-    components: [appReviewButtons(type)]
+    components: [applicationReviewButtons(type)]
   });
 
-  return interaction.reply({
-    content: "✅ Your application was submitted. Staff will review it soon.",
-    ephemeral: true
-  });
-}
-
-// =======================
-// VOUCH SYSTEM
-// =======================
-
-function vouchButton(type) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`vouch_${type}`)
-      .setLabel("Write Required Vouch")
-      .setEmoji("⭐")
-      .setStyle(ButtonStyle.Success)
+  return interaction.reply(
+    ephemeral("✅ Application submitted.")
   );
 }
 
-async function vouchModal(interaction, type) {
+// ======================================================
+// VOUCH SYSTEM
+// ======================================================
+function vouchModal(type) {
   const modal = new ModalBuilder()
     .setCustomId(`vouch_modal_${type}`)
     .setTitle(type === "mm" ? "MM Vouch" : "Shop Vouch");
@@ -1212,81 +1487,185 @@ async function vouchModal(interaction, type) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("rating")
-        .setLabel("Rating 1-5")
-        .setPlaceholder("Example: 5")
+        .setLabel("Rating from 1 to 5")
+        .setPlaceholder("5")
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ),
+
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("vouch")
-        .setLabel("Write your vouch")
-        .setPlaceholder("Example: Fast and trusted service!")
+        .setCustomId("items")
+        .setLabel("Items bought or traded")
         .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("comment")
+        .setLabel("Your honest vouch")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("proof")
+        .setLabel("Proof link or uploaded in ticket")
+        .setStyle(TextInputStyle.Short)
         .setRequired(true)
     )
   );
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-async function sendVouch(interaction, type) {
-  const rating = interaction.fields.getTextInputValue("rating");
-  const text = interaction.fields.getTextInputValue("vouch");
-
-  const channelId = type === "mm" ? MM_VOUCH_CHANNEL_ID : BUYER_VOUCH_CHANNEL_ID;
-  const channel = await client.channels.fetch(channelId);
-
-  const claim = getClaim(interaction.channel.id);
-  const claimedUserText = claim ? `<@${claim.userId}>` : "Not claimed";
-
-  let title = "⭐ New Shop Vouch";
-  let description = [
-    `**Vouch this server and <@${OWNER_ID}>**`,
-    "",
-    text
-  ].join("\n");
-
-  if (type === "mm") {
-    title = "🛡️ New MM Vouch";
-    description = [
-      `**Vouch for ${claimedUserText}**`,
-      "",
-      text
-    ].join("\n");
-  }
-
-  const embed = premiumEmbed(
-    title,
-    description,
-    type === "mm" ? 0x5865f2 : 0x2ecc71
-  ).addFields(
-    { name: "👤 Vouched By", value: `${interaction.user}\n${interaction.user.username}`, inline: true },
-    { name: "⭐ Rating", value: `${rating}/5`, inline: true },
-    {
-      name: type === "mm" ? "🛡️ Claimed MM" : "🏪 Shop Owner",
-      value: type === "mm" ? claimedUserText : `<@${OWNER_ID}>`,
-      inline: false
-    },
-    { name: "🎫 Ticket", value: `${interaction.channel}`, inline: false }
+async function submitVouch(interaction, type) {
+  const rating = safeWholeNumber(
+    interaction.fields.getTextInputValue("rating"),
+    1,
+    5
   );
 
-  await channel.send({
-    content: type === "mm" && claim ? `<@${claim.userId}> New MM vouch received!` : null,
+  if (!rating) {
+    return interaction.reply(
+      ephemeral("❌ Rating must be a whole number from 1 to 5.")
+    );
+  }
+
+  const items = interaction.fields.getTextInputValue("items");
+  const comment = interaction.fields.getTextInputValue("comment");
+  const proof = interaction.fields.getTextInputValue("proof");
+
+  const targetChannelId = type === "mm"
+    ? MM_VOUCH_CHANNEL_ID
+    : BUYER_VOUCH_CHANNEL_ID;
+
+  const targetChannel = await client.channels.fetch(targetChannelId);
+  const claim = getClaim(interaction.channel.id);
+
+  const embed = premiumEmbed(
+    type === "mm" ? "🛡️ New MM Vouch" : "⭐ New Shop Vouch",
+    comment,
+    type === "mm" ? 0x5865f2 : 0x2ecc71
+  ).addFields(
+    {
+      name: "👤 Vouched By",
+      value: `${interaction.user}\n${interaction.user.username}`,
+      inline: true
+    },
+    {
+      name: "⭐ Rating",
+      value: `${"⭐".repeat(rating)} (${rating}/5)`,
+      inline: true
+    },
+    {
+      name: "📦 Items",
+      value: items,
+      inline: false
+    },
+    {
+      name: type === "mm" ? "🛡️ Claimed MM" : "👑 Shop Owner",
+      value: type === "mm"
+        ? claim
+          ? `<@${claim.userId}>`
+          : "No claimed MM"
+        : `<@${OWNER_ID}>`,
+      inline: false
+    },
+    {
+      name: "🖼️ Proof",
+      value: proof,
+      inline: false
+    },
+    {
+      name: "🎫 Ticket",
+      value: `${interaction.channel}`,
+      inline: false
+    }
+  );
+
+  await targetChannel.send({
+    content:
+      type === "mm" && claim
+        ? `<@${claim.userId}> New MM vouch!`
+        : null,
     embeds: [embed]
   });
 
-  vouchCompletedTickets.add(interaction.channel.id);
-
-  return interaction.reply({
-    content: `✅ Vouch sent to <#${channelId}>. Thank you!`,
-    ephemeral: true
+  editDatabase(database => {
+    if (!database.vouchedTickets.includes(interaction.channel.id)) {
+      database.vouchedTickets.push(interaction.channel.id);
+    }
   });
-}
-// =======================
-// SLASH COMMANDS
-// =======================
 
+  return interaction.reply(
+    ephemeral(`✅ Vouch posted in <#${targetChannelId}>.`)
+  );
+}
+
+// ======================================================
+// OWNER MODALS
+// ======================================================
+function discountCreateModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("owner_discount_create")
+    .setTitle("Create Discount Code");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("code")
+        .setLabel("Discount code")
+        .setPlaceholder("SAVE10")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("type")
+        .setLabel("Type: percent or dollar")
+        .setPlaceholder("percent")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("amount")
+        .setLabel("Amount")
+        .setPlaceholder("10")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("uses")
+        .setLabel("Total uses")
+        .setPlaceholder("100")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("peruser")
+        .setLabel("Uses per user")
+        .setPlaceholder("1")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    )
+  );
+
+  return modal;
+}
+
+// ======================================================
+// SLASH COMMANDS
+// ======================================================
 const commands = [
   new SlashCommandBuilder()
     .setName("panel")
@@ -1297,170 +1676,200 @@ const commands = [
     .setDescription("Check bot ping"),
 
   new SlashCommandBuilder()
+    .setName("addtoticket")
+    .setDescription("Staff/MM/owner: add a user to the ticket")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("User to add")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("close")
+    .setDescription("Close this ticket after a vouch"),
+
+  new SlashCommandBuilder()
     .setName("credit")
     .setDescription("Owner only: manage store credit")
-    .addSubcommand(s =>
-      s.setName("add")
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("add")
         .setDescription("Add store credit")
-        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
-        .addNumberOption(o => o.setName("amount").setDescription("Amount").setRequired(true))
+        .addUserOption(option =>
+          option
+            .setName("user")
+            .setDescription("User")
+            .setRequired(true)
+        )
+        .addNumberOption(option =>
+          option
+            .setName("amount")
+            .setDescription("Amount")
+            .setRequired(true)
+        )
     )
-    .addSubcommand(s =>
-      s.setName("remove")
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("remove")
         .setDescription("Remove store credit")
-        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
-        .addNumberOption(o => o.setName("amount").setDescription("Amount").setRequired(true))
+        .addUserOption(option =>
+          option
+            .setName("user")
+            .setDescription("User")
+            .setRequired(true)
+        )
+        .addNumberOption(option =>
+          option
+            .setName("amount")
+            .setDescription("Amount")
+            .setRequired(true)
+        )
     )
-    .addSubcommand(s =>
-      s.setName("check")
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("set")
+        .setDescription("Set exact store credit")
+        .addUserOption(option =>
+          option
+            .setName("user")
+            .setDescription("User")
+            .setRequired(true)
+        )
+        .addNumberOption(option =>
+          option
+            .setName("amount")
+            .setDescription("Amount")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("check")
         .setDescription("Check store credit")
-        .addUserOption(o => o.setName("user").setDescription("User").setRequired(false))
+        .addUserOption(option =>
+          option
+            .setName("user")
+            .setDescription("User")
+            .setRequired(false)
+        )
     ),
 
   new SlashCommandBuilder()
     .setName("discount")
     .setDescription("Owner only: manage discount codes")
-    .addSubcommand(s =>
-      s.setName("create")
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("create")
         .setDescription("Create a discount code")
     )
-    .addSubcommand(s =>
-      s.setName("list")
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("list")
         .setDescription("List discount codes")
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("disable")
+        .setDescription("Disable a discount code")
+        .addStringOption(option =>
+          option
+            .setName("code")
+            .setDescription("Discount code")
+            .setRequired(true)
+        )
     ),
 
   new SlashCommandBuilder()
-    .setName("addtoticket")
-    .setDescription("Staff only: add user to ticket")
-    .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName("close")
-    .setDescription("Staff only: close this ticket")
-].map(c => c.toJSON());
+    .setName("owner")
+    .setDescription("Owner override commands")
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("unclaim")
+        .setDescription("Remove the claim from this ticket")
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("forcecomplete")
+        .setDescription("Force-complete this ticket")
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("forceclose")
+        .setDescription("Force-close this ticket")
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName("transferclaim")
+        .setDescription("Transfer the claim to another user")
+        .addUserOption(option =>
+          option
+            .setName("user")
+            .setDescription("New claimed user")
+            .setRequired(true)
+        )
+    )
+].map(command => command.toJSON());
 
 async function registerCommands() {
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  const rest = new REST({
+    version: "10"
+  }).setToken(TOKEN);
 
   await rest.put(
     Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-    { body: commands }
+    {
+      body: commands
+    }
   );
 
   console.log("✅ Slash commands registered.");
 }
 
-// =======================
-// MAIN HANDLER
-// =======================
-
+// ======================================================
+// MAIN INTERACTION HANDLER
+// ======================================================
 client.on("interactionCreate", async interaction => {
   try {
+    // ----------------------
     // SLASH COMMANDS
+    // ----------------------
     if (interaction.isChatInputCommand()) {
-      const cmd = interaction.commandName;
+      const commandName = interaction.commandName;
 
-      if (cmd === "ping") {
-        return interaction.reply({
-          content: `🏓 Pong! ${client.ws.ping}ms`,
-          ephemeral: true
-        });
+      if (commandName === "ping") {
+        return interaction.reply(
+          ephemeral(`🏓 Pong! ${client.ws.ping}ms`)
+        );
       }
 
-      if (cmd === "panel") {
-        if (isBuyerTicket(interaction.channel)) return interaction.reply(buyerPanel());
-        if (isMMTicket(interaction.channel)) return interaction.reply(mmPanel());
-        if (isApplicationTicket(interaction.channel)) return interaction.reply(applicationPanel());
+      if (commandName === "panel") {
+        if (isBuyerTicket(interaction.channel)) {
+          return interaction.reply(shopPanel());
+        }
 
-        return interaction.reply({
-          content: "❌ This only works inside buyer/MM/application tickets.",
-          ephemeral: true
-        });
+        if (isMMTicket(interaction.channel)) {
+          return interaction.reply(mmPanel());
+        }
+
+        if (isApplicationTicket(interaction.channel)) {
+          return interaction.reply(applicationPanel());
+        }
+
+        return interaction.reply(
+          ephemeral("❌ Use this inside a buyer, MM, or application ticket.")
+        );
       }
 
-      if (cmd === "credit") {
-        if (!isOwner(interaction.user.id)) {
-          return interaction.reply({
-            content: ownerDeny(),
-            ephemeral: true
-          });
-        }
-
-        const sub = interaction.options.getSubcommand();
-        const user = interaction.options.getUser("user") || interaction.user;
-
-        if (sub === "add") {
-          const amount = interaction.options.getNumber("amount");
-          const balance = addCredit(user.id, amount);
-
-          return interaction.reply({
-            content: `✅ Added **${money(amount)}** store credit to ${user}.\nNew Balance: **${money(balance)}**`,
-            ephemeral: true
-          });
-        }
-
-        if (sub === "remove") {
-          const amount = interaction.options.getNumber("amount");
-          const balance = removeCredit(user.id, amount);
-
-          return interaction.reply({
-            content: `✅ Removed **${money(amount)}** store credit from ${user}.\nNew Balance: **${money(balance)}**`,
-            ephemeral: true
-          });
-        }
-
-        if (sub === "check") {
-          const balance = getCredit(user.id);
-
-          return interaction.reply({
-            content: `🏦 ${user} has **${money(balance)}** store credit.`,
-            ephemeral: true
-          });
-        }
-      }
-
-      if (cmd === "discount") {
-        if (!isOwner(interaction.user.id)) {
-          return interaction.reply({
-            content: ownerDeny(),
-            ephemeral: true
-          });
-        }
-
-        const sub = interaction.options.getSubcommand();
-
-        if (sub === "create") {
-          return discountCreateModal(interaction);
-        }
-
-        if (sub === "list") {
-          if (discountCodes.size === 0) {
-            return interaction.reply({
-              content: "🎟️ No discount codes created yet.",
-              ephemeral: true
-            });
-          }
-
-          const list = [...discountCodes.values()]
-            .map(c => {
-              const amountText = c.type === "percent" ? `${c.amount}% off` : `${money(c.amount)} off`;
-              return `• **${c.code}** — ${amountText} — Uses: **${c.used}/${c.maxUses}**`;
-            })
-            .join("\n");
-
-          return interaction.reply({
-            embeds: [premiumEmbed("🎟️ Discount Codes", list)],
-            ephemeral: true
-          });
-        }
-      }
-
-      if (cmd === "addtoticket") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({
-            content: deny(),
-            ephemeral: true
-          });
+      if (commandName === "addtoticket") {
+        if (
+          !isOwner(interaction.user.id) &&
+          !isSeller(interaction) &&
+          !isAnyMM(interaction)
+        ) {
+          return interaction.reply(
+            ephemeral("❌ Staff/MM only.")
+          );
         }
 
         const user = interaction.options.getUser("user");
@@ -1470,23 +1879,15 @@ client.on("interactionCreate", async interaction => {
         return interaction.reply(`✅ Added ${user} to this ticket.`);
       }
 
-      if (cmd === "close") {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({
-            content: deny(),
-            ephemeral: true
-          });
-        }
+      if (commandName === "close") {
+        const hasVouch = db.vouchedTickets.includes(
+          interaction.channel.id
+        );
 
-        if (
-          (isBuyerTicket(interaction.channel) || isMMTicket(interaction.channel)) &&
-          !vouchCompletedTickets.has(interaction.channel.id) &&
-          !isOwner(interaction.user.id)
-        ) {
-          return interaction.reply({
-            content: "⭐ This ticket cannot be closed yet. A required vouch has not been submitted.",
-            ephemeral: true
-          });
+        if (!hasVouch && !isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral("⭐ A required vouch must be submitted first.")
+          );
         }
 
         await interaction.reply("🔒 Closing ticket in 5 seconds...");
@@ -1494,28 +1895,343 @@ client.on("interactionCreate", async interaction => {
         setTimeout(() => {
           interaction.channel.delete().catch(() => {});
         }, 5000);
+
+        return;
+      }
+
+      if (commandName === "credit") {
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral("👑 Only the owner can use this.")
+          );
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+        const user =
+          interaction.options.getUser("user") || interaction.user;
+
+        if (subcommand === "check") {
+          return interaction.reply(
+            ephemeral(
+              `${user} has **${money(getCredit(user.id))}** store credit.`
+            )
+          );
+        }
+
+        const amount = interaction.options.getNumber("amount");
+        let balance;
+
+        if (subcommand === "add") {
+          balance = addCredit(user.id, amount);
+        } else if (subcommand === "remove") {
+          balance = removeCredit(user.id, amount);
+        } else {
+          balance = setCredit(user.id, amount);
+        }
+
+        return interaction.reply(
+          ephemeral(
+            `✅ Credit updated for ${user}.\nNew balance: **${money(balance)}**`
+          )
+        );
+      }
+
+      if (commandName === "discount") {
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral("👑 Only the owner can use this.")
+          );
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+
+        if (subcommand === "create") {
+          return interaction.showModal(discountCreateModal());
+        }
+
+        if (subcommand === "disable") {
+          const code = interaction.options
+            .getString("code")
+            .toUpperCase();
+
+          editDatabase(database => {
+            if (database.discounts[code]) {
+              database.discounts[code].active = false;
+            }
+          });
+
+          return interaction.reply(
+            ephemeral(`✅ Discount **${code}** disabled.`)
+          );
+        }
+
+        const discounts = Object.values(db.discounts);
+
+        const text =
+          discounts.length > 0
+            ? discounts
+                .map(discount => {
+                  const valueText =
+                    discount.type === "percent"
+                      ? `${discount.amount}%`
+                      : money(discount.amount);
+
+                  return [
+                    `**${discount.code}**`,
+                    `Value: ${valueText}`,
+                    `Uses: ${discount.used}/${discount.maxUses}`,
+                    `Per user: ${discount.perUserLimit}`,
+                    `Status: ${discount.active ? "Active" : "Disabled"}`
+                  ].join(" • ");
+                })
+                .join("\n")
+            : "No discount codes exist.";
+
+        return interaction.reply({
+          embeds: [
+            premiumEmbed(
+              "🎟️ Discount Codes",
+              text,
+              0xf1c40f
+            )
+          ],
+          ephemeral: true
+        });
+      }
+
+      if (commandName === "owner") {
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral("👑 Only the owner can use this.")
+          );
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+
+        if (subcommand === "unclaim") {
+          removeClaim(interaction.channel.id);
+
+          return interaction.reply(
+            "👑 Owner removed the current claim."
+          );
+        }
+
+        if (subcommand === "transferclaim") {
+          const user = interaction.options.getUser("user");
+          const existingClaim = getClaim(interaction.channel.id);
+
+          setClaim(
+            interaction.channel.id,
+            user.id,
+            existingClaim?.type || "owner_transfer"
+          );
+
+          if (db.mmTickets[interaction.channel.id]) {
+            editDatabase(database => {
+              database.mmTickets[interaction.channel.id].claimedBy =
+                user.id;
+            });
+          }
+
+          return interaction.reply(
+            `👑 Owner transferred the claim to ${user}.`
+          );
+        }
+
+        if (subcommand === "forcecomplete") {
+          editDatabase(database => {
+            if (database.orders[interaction.channel.id]) {
+              database.orders[interaction.channel.id].status =
+                "completed_by_owner";
+            }
+
+            if (database.mmTickets[interaction.channel.id]) {
+              database.mmTickets[interaction.channel.id].status =
+                "completed_by_owner";
+            }
+          });
+
+          return interaction.reply(
+            "👑 Owner force-completed this ticket."
+          );
+        }
+
+        await interaction.reply(
+          "👑 Owner force-closing this ticket..."
+        );
+
+        setTimeout(() => {
+          interaction.channel.delete().catch(() => {});
+        }, 1500);
+
+        return;
       }
     }
 
+    // ----------------------
     // BUTTONS
+    // ----------------------
     if (interaction.isButton()) {
-      if (interaction.customId === "buyer_start") {
-        if (!isBuyerTicket(interaction.channel)) {
-          return interaction.reply({
-            content: "❌ Buyer tickets only.",
-            ephemeral: true
-          });
-        }
+      const customId = interaction.customId;
 
-        return buyerCategoryMenu(interaction);
+      if (customId === "shop_add_seed") {
+        return interaction.reply(shopItemMenu("seeds", 0));
       }
 
-      if (interaction.customId === "mm_start") {
-        if (!isMMTicket(interaction.channel)) {
-          return interaction.reply({
-            content: "❌ MM tickets only.",
-            ephemeral: true
+      if (customId === "shop_add_pet") {
+        return interaction.reply(shopItemMenu("pets", 0));
+      }
+
+      if (customId.startsWith("shop_page_")) {
+        const parts = customId.split("_");
+        const category = parts[2];
+        const page = Number(parts[3]);
+
+        return interaction.update(shopItemMenu(category, page));
+      }
+
+      if (customId === "shop_view_cart") {
+        return interaction.reply({
+          embeds: [buildCartEmbed(interaction.user.id)],
+          components: [cartButtons()],
+          ephemeral: true
+        });
+      }
+
+      if (customId === "shop_clear_cart") {
+        clearCart(interaction.user.id);
+
+        return interaction.reply(
+          ephemeral("🗑️ Your cart was cleared.")
+        );
+      }
+
+      if (customId === "shop_remove_item") {
+        const cart = getCart(interaction.user.id);
+
+        if (cart.length === 0) {
+          return interaction.reply(
+            ephemeral("❌ Your cart is empty.")
+          );
+        }
+
+        return interaction.reply({
+          content: "Choose an item to remove:",
+          components: [removeItemMenu(interaction.user.id)],
+          ephemeral: true
+        });
+      }
+
+      if (customId === "shop_checkout") {
+        if (getCart(interaction.user.id).length === 0) {
+          return interaction.reply(
+            ephemeral("❌ Your cart is empty.")
+          );
+        }
+
+        return interaction.showModal(checkoutModal());
+      }
+
+      if (customId === "order_claim") {
+        if (!isSeller(interaction)) {
+          return interaction.reply(
+            ephemeral("❌ Sellers only.")
+          );
+        }
+
+        const existingClaim = getClaim(interaction.channel.id);
+
+        if (existingClaim && !isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral(
+              `⚠️ This order is already claimed by <@${existingClaim.userId}>.`
+            )
+          );
+        }
+
+        setClaim(
+          interaction.channel.id,
+          interaction.user.id,
+          "shop"
+        );
+
+        return interaction.reply(
+          `🙋 Order claimed by ${interaction.user}`
+        );
+      }
+
+      if (
+        ["order_paid", "order_done", "order_cancel"].includes(
+          customId
+        )
+      ) {
+        if (!isSeller(interaction)) {
+          return interaction.reply(
+            ephemeral("❌ Sellers only.")
+          );
+        }
+
+        const claim = getClaim(interaction.channel.id);
+
+        if (!claimedByOrOwner(interaction, claim)) {
+          return interaction.reply(
+            ephemeral(
+              `❌ Only the claimed seller or owner can do this.`
+            )
+          );
+        }
+
+        if (customId === "order_paid") {
+          editDatabase(database => {
+            if (database.orders[interaction.channel.id]) {
+              database.orders[interaction.channel.id].status =
+                "payment_received";
+            }
           });
+
+          return interaction.reply(
+            "💳 Payment marked as received."
+          );
+        }
+
+        if (customId === "order_cancel") {
+          editDatabase(database => {
+            if (database.orders[interaction.channel.id]) {
+              database.orders[interaction.channel.id].status =
+                "cancelled";
+            }
+          });
+
+          return interaction.reply("❌ Order cancelled.");
+        }
+
+        editDatabase(database => {
+          if (database.orders[interaction.channel.id]) {
+            database.orders[interaction.channel.id].status =
+              "delivered_waiting_vouch";
+          }
+        });
+
+        return interaction.reply({
+          content:
+            "📦 Order delivered. The buyer must now submit the required shop vouch.",
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("vouch_shop")
+                .setLabel("Write Shop Vouch")
+                .setEmoji("⭐")
+                .setStyle(ButtonStyle.Success)
+            )
+          ]
+        });
+      }
+
+      if (customId === "mm_start") {
+        if (!isMMTicket(interaction.channel)) {
+          return interaction.reply(
+            ephemeral("❌ MM tickets only.")
+          );
         }
 
         return interaction.reply({
@@ -1525,398 +2241,533 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      if (interaction.customId === "apply_start") {
-        if (!isApplicationTicket(interaction.channel)) {
-          return interaction.reply({
-            content: "❌ Application tickets only.",
-            ephemeral: true
-          });
+      if (customId === "mm_claim") {
+        if (!isAnyMM(interaction)) {
+          return interaction.reply(
+            ephemeral("❌ MM only.")
+          );
         }
 
+        const ticket = db.mmTickets[interaction.channel.id];
+
+        if (!ticket) {
+          return interaction.reply(
+            ephemeral("❌ No MM request exists in this ticket.")
+          );
+        }
+
+        const requiredRole = mmRoleForSize(ticket.size);
+
+        if (
+          !isOwner(interaction.user.id) &&
+          !hasRole(interaction, requiredRole.roleId)
+        ) {
+          return interaction.reply(
+            ephemeral(
+              `❌ This trade requires the **${requiredRole.roleName}** role.`
+            )
+          );
+        }
+
+        if (ticket.claimedBy && !isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral(
+              `⚠️ This ticket is already claimed by <@${ticket.claimedBy}>. Nobody can cut over them.`
+            )
+          );
+        }
+
+        editDatabase(database => {
+          database.mmTickets[interaction.channel.id].claimedBy =
+            interaction.user.id;
+
+          database.mmTickets[interaction.channel.id].claimedAt =
+            Date.now();
+
+          database.claims[interaction.channel.id] = {
+            userId: interaction.user.id,
+            type: "mm",
+            claimedAt: Date.now()
+          };
+        });
+
+        return interaction.reply(
+          `🛡️ MM ticket claimed by ${interaction.user}`
+        );
+      }
+
+      if (
+        ["mm_fee", "mm_confirmed", "mm_done", "mm_cancel"].includes(
+          customId
+        )
+      ) {
+        if (!isAnyMM(interaction)) {
+          return interaction.reply(
+            ephemeral("❌ MM only.")
+          );
+        }
+
+        const ticket = db.mmTickets[interaction.channel.id];
+
+        if (!ticket?.claimedBy) {
+          return interaction.reply(
+            ephemeral("❌ This MM ticket has not been claimed.")
+          );
+        }
+
+        if (
+          !isOwner(interaction.user.id) &&
+          ticket.claimedBy !== interaction.user.id
+        ) {
+          return interaction.reply(
+            ephemeral(
+              `❌ Only the claimed MM can use this. Claimed MM: <@${ticket.claimedBy}>`
+            )
+          );
+        }
+
+        if (customId === "mm_fee") {
+          return interaction.showModal(mmFeeModal());
+        }
+
+        if (customId === "mm_confirmed") {
+          editDatabase(database => {
+            database.mmTickets[interaction.channel.id].status =
+              "both_confirmed";
+          });
+
+          return interaction.reply("✅ Both traders confirmed.");
+        }
+
+        if (customId === "mm_cancel") {
+          editDatabase(database => {
+            database.mmTickets[interaction.channel.id].status =
+              "cancelled";
+          });
+
+          return interaction.reply("❌ MM request cancelled.");
+        }
+
+        editDatabase(database => {
+          database.mmTickets[interaction.channel.id].status =
+            "completed_waiting_vouch";
+        });
+
         return interaction.reply({
-          content: "What position do you want to apply for?",
+          content:
+            "📦 Trade completed. Both traders should submit an MM vouch.",
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("vouch_mm")
+                .setLabel("Write MM Vouch")
+                .setEmoji("⭐")
+                .setStyle(ButtonStyle.Success)
+            )
+          ]
+        });
+      }
+
+      if (customId === "vouch_shop") {
+        return interaction.showModal(vouchModal("shop"));
+      }
+
+      if (customId === "vouch_mm") {
+        return interaction.showModal(vouchModal("mm"));
+      }
+
+      if (customId === "apply_start") {
+        return interaction.reply({
+          content: "Choose a position:",
           components: [applicationChoiceButtons()],
           ephemeral: true
         });
       }
 
-      if (interaction.customId === "apply_mm") {
-        return mmApplyModalPart1(interaction);
+      if (customId === "apply_mm") {
+        return interaction.showModal(mmApplicationPart1Modal());
       }
 
-      if (interaction.customId === "apply_admin") {
-        return adminApplyModalPart1(interaction);
-      }
-
-      if (interaction.customId === "mm_apply_continue") {
-        return mmApplyModalPart2(interaction);
-      }
-
-      if (interaction.customId === "admin_apply_continue") {
-        return adminApplyModalPart2(interaction);
-      }
-
-      if (interaction.customId.startsWith("app_accept_")) {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Staff only.",
-            ephemeral: true
-          });
-        }
-
-        return interaction.reply(`✅ Application accepted by ${interaction.user}.`);
-      }
-
-      if (interaction.customId.startsWith("app_deny_")) {
-        if (!staffOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Staff only.",
-            ephemeral: true
-          });
-        }
-
-        return interaction.reply(`❌ Application denied by ${interaction.user}.`);
-      }
-
-      if (interaction.customId === "order_claim") {
-        if (!sellerOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Sellers only.",
-            ephemeral: true
-          });
-        }
-
-        if (hasClaim(interaction.channel.id)) {
-          const claim = getClaim(interaction.channel.id);
-
-          return interaction.reply({
-            content: `⚠️ This order is already claimed by <@${claim.userId}>.`,
-            ephemeral: true
-          });
-        }
-
-        setClaim(interaction.channel.id, interaction.user.id, "shop");
-
-        return interaction.reply(`🙋 Order claimed by ${interaction.user}`);
-      }
-
-      if (interaction.customId === "order_paid") {
-        if (!sellerOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Sellers only.",
-            ephemeral: true
-          });
-        }
-
-        const claim = getClaim(interaction.channel.id);
-
-        return interaction.reply(
-          claim
-            ? `💳 Payment marked as received.\nSeller: <@${claim.userId}>`
-            : "💳 Payment marked as received.\n⚠️ No seller has claimed this ticket."
+      if (customId === "apply_admin") {
+        return interaction.showModal(
+          adminApplicationPart1Modal()
         );
       }
 
-      if (interaction.customId === "order_done") {
-        if (!sellerOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Sellers only.",
-            ephemeral: true
-          });
-        }
-
-        const claim = getClaim(interaction.channel.id);
-
-        return interaction.reply({
-          content: [
-            "📦 Order delivered.",
-            "",
-            "⭐ **Vouch is required before this ticket can be closed.**",
-            `Please vouch this server and <@${OWNER_ID}>.`,
-            claim ? `Seller who claimed this ticket: <@${claim.userId}>` : "Seller who claimed this ticket: Not claimed"
-          ].join("\n"),
-          components: [vouchButton("shop")]
-        });
+      if (customId === "mm_apply_continue") {
+        return interaction.showModal(mmApplicationPart2Modal());
       }
 
-      if (interaction.customId === "order_cancel") {
-        if (!sellerOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ Sellers only.",
-            ephemeral: true
-          });
-        }
-
-        return interaction.reply("❌ Order cancelled.");
-      }
-
-      if (interaction.customId === "mm_claim") {
-        if (!mmOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ MM only.",
-            ephemeral: true
-          });
-        }
-
-        if (hasClaim(interaction.channel.id)) {
-          const claim = getClaim(interaction.channel.id);
-
-          return interaction.reply({
-            content: `⚠️ This MM ticket is already claimed by <@${claim.userId}>.\nNo fighting over tickets 😭`,
-            ephemeral: true
-          });
-        }
-
-        setClaim(interaction.channel.id, interaction.user.id, "mm");
-
-        return interaction.reply(`🛡️ MM ticket claimed by ${interaction.user}`);
-      }
-
-      if (interaction.customId === "mm_payment_needed") {
-        if (!mmOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ MM only.",
-            ephemeral: true
-          });
-        }
-
-        return mmPaymentModal(interaction);
-      }
-
-      if (interaction.customId === "mm_confirmed") {
-        if (!mmOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ MM only.",
-            ephemeral: true
-          });
-        }
-
-        const claim = getClaim(interaction.channel.id);
-
-        return interaction.reply(
-          claim
-            ? `✅ Both traders confirmed.\nClaimed MM: <@${claim.userId}>`
-            : "✅ Both traders confirmed.\n⚠️ No MM has claimed this ticket yet."
+      if (customId === "admin_apply_continue") {
+        return interaction.showModal(
+          adminApplicationPart2Modal()
         );
       }
 
-      if (interaction.customId === "mm_done") {
-        if (!mmOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ MM only.",
-            ephemeral: true
-          });
+      if (customId.startsWith("application_accept_")) {
+        if (!isReviewer(interaction)) {
+          return interaction.reply(
+            ephemeral("❌ Review role or owner only.")
+          );
         }
 
-        const claim = getClaim(interaction.channel.id);
-
-        return interaction.reply({
-          content: [
-            "📦 Trade completed.",
-            "",
-            "⭐ **MM vouch is required before this ticket can be closed.**",
-            claim ? `Please vouch the claimed MM: <@${claim.userId}>` : "No MM claimed this ticket yet.",
-            "Click below to write the vouch."
-          ].join("\n"),
-          components: [vouchButton("mm")]
-        });
+        return interaction.reply(
+          `✅ Application accepted by ${interaction.user}.`
+        );
       }
 
-      if (interaction.customId === "mm_cancel") {
-        if (!mmOrOwner(interaction)) {
-          return interaction.reply({
-            content: "❌ MM only.",
-            ephemeral: true
-          });
+      if (customId.startsWith("application_deny_")) {
+        if (!isReviewer(interaction)) {
+          return interaction.reply(
+            ephemeral("❌ Review role or owner only.")
+          );
         }
 
-        return interaction.reply("❌ MM request cancelled.");
-      }
-
-      if (interaction.customId === "vouch_shop") {
-        return vouchModal(interaction, "shop");
-      }
-
-      if (interaction.customId === "vouch_mm") {
-        return vouchModal(interaction, "mm");
+        return interaction.reply(
+          `❌ Application denied by ${interaction.user}.`
+        );
       }
     }
-        // SELECT MENUS
-    if (interaction.isStringSelectMenu()) {
-      if (interaction.customId === "buyer_category") {
-        return buyerItemMenu(interaction, interaction.values[0]);
-      }
 
-      if (interaction.customId.startsWith("buyer_item_")) {
-        const category = interaction.customId.replace("buyer_item_", "");
+    // ----------------------
+    // STRING SELECT MENUS
+    // ----------------------
+    if (interaction.isStringSelectMenu()) {
+      const customId = interaction.customId;
+
+      if (customId.startsWith("shop_pick_")) {
+        const parts = customId.split("_");
+        const category = parts[2];
         const itemName = interaction.values[0];
 
-        if (itemName === "Other") {
-          return buyerOrderModal(interaction, category, "Custom Item", null);
-        }
-
-        return buyerOrderModal(interaction, category, itemName, priceList[category][itemName]);
+        return interaction.showModal(
+          quantityModal(category, itemName)
+        );
       }
 
-      if (interaction.customId === "mm_size") {
-        return mmTraderSelect(interaction, interaction.values[0]);
+      if (customId === "shop_remove_select") {
+        const index = Number(interaction.values[0]);
+
+        removeCartItem(interaction.user.id, index);
+
+        return interaction.update({
+          content: "✅ Item removed.",
+          components: [],
+          embeds: [buildCartEmbed(interaction.user.id)]
+        });
+      }
+
+      if (customId === "mm_size") {
+        const size = interaction.values[0];
+
+        return interaction.reply({
+          content: "Select the other trader:",
+          components: [mmTraderMenu(size)],
+          ephemeral: true
+        });
       }
     }
 
+    // ----------------------
     // USER SELECT MENUS
+    // ----------------------
     if (interaction.isUserSelectMenu()) {
       if (interaction.customId.startsWith("mm_trader_")) {
-        const size = interaction.customId.replace("mm_trader_", "");
+        const size = interaction.customId.replace(
+          "mm_trader_",
+          ""
+        );
+
         const traderId = interaction.values[0];
 
         if (traderId === interaction.user.id) {
-          return interaction.reply({
-            content: "😭 You cannot select yourself as the other trader.",
-            ephemeral: true
-          });
+          return interaction.reply(
+            ephemeral("❌ You cannot select yourself.")
+          );
         }
 
         await addUserToTicket(interaction.channel, traderId);
 
-        return mmTradeModal(interaction, size, traderId);
+        return interaction.showModal(
+          mmDetailsModal(size, traderId)
+        );
       }
     }
 
+    // ----------------------
     // MODALS
+    // ----------------------
     if (interaction.isModalSubmit()) {
-      if (interaction.customId === "discount_create_modal") {
-        if (!isOwner(interaction.user.id)) {
-          return interaction.reply({
-            content: ownerDeny(),
-            ephemeral: true
-          });
+      const customId = interaction.customId;
+
+      if (customId.startsWith("shop_quantity_")) {
+        const parts = customId.split("_");
+        const category = parts[2];
+        const encodedName = parts.slice(3).join("_");
+
+        const itemName = Buffer.from(
+          encodedName,
+          "base64"
+        ).toString("utf8");
+
+        const quantity = safeWholeNumber(
+          interaction.fields.getTextInputValue("quantity")
+        );
+
+        if (!quantity) {
+          return interaction.reply(
+            ephemeral(
+              "❌ Quantity must be a whole number from 1 to 100000."
+            )
+          );
         }
 
-        const code = interaction.fields.getTextInputValue("code");
-        const typeRaw = interaction.fields.getTextInputValue("type").toLowerCase().trim();
-        const amount = Number(interaction.fields.getTextInputValue("amount"));
-        const uses = Number(interaction.fields.getTextInputValue("uses"));
-
-        const type = typeRaw.includes("percent") || typeRaw.includes("%") ? "percent" : "dollar";
-
-        if (isNaN(amount) || amount <= 0 || isNaN(uses) || uses <= 0) {
-          return interaction.reply({
-            content: "❌ Invalid amount or uses.",
-            ephemeral: true
-          });
-        }
-
-        const created = createDiscountCode(code, type, amount, uses, interaction.user.id);
+        addToCart(
+          interaction.user.id,
+          category,
+          itemName,
+          quantity
+        );
 
         return interaction.reply({
-          content: [
-            `✅ Discount code **${created.code}** created.`,
-            `Type: **${created.type}**`,
-            `Amount: **${created.type === "percent" ? `${created.amount}%` : money(created.amount)}**`,
-            `Max Uses: **${created.maxUses}**`
-          ].join("\n"),
+          content: `✅ Added **${itemName} ×${quantity}** to your cart.`,
+          embeds: [buildCartEmbed(interaction.user.id)],
+          components: [cartButtons()],
           ephemeral: true
         });
       }
 
-      if (interaction.customId.startsWith("buyer_order_")) {
-        const parts = interaction.customId.split("_");
-        const category = parts[2];
-        const priceRaw = parts[3];
-        const itemEncoded = parts.slice(4).join("_");
-
-        let itemName = Buffer.from(itemEncoded, "base64").toString("utf8");
-        const itemPrice = priceRaw === "custom" ? null : Number(priceRaw);
-
-        if (itemName === "Custom Item") {
-          itemName = interaction.fields.getTextInputValue("custom_item");
-        }
-
-        const amount = cleanAmount(interaction.fields.getTextInputValue("amount"));
-        const payment = interaction.fields.getTextInputValue("payment");
-        const discountCode = interaction.fields.getTextInputValue("discount") || "";
-        const creditRaw = interaction.fields.getTextInputValue("credit") || "";
-        const useCredit = creditRaw.toLowerCase().includes("yes");
-
-        return sendOrderSummary(interaction, {
-          category,
-          item: itemName,
-          price: itemPrice,
-          amount,
-          payment,
-          discountCode,
-          useCredit
-        });
+      if (customId === "shop_checkout_modal") {
+        return createOrderFromCart(interaction);
       }
 
-      if (interaction.customId.startsWith("mm_trade_")) {
-        const parts = interaction.customId.split("_");
+      if (customId.startsWith("mm_details_")) {
+        const parts = customId.split("_");
         const size = parts[2];
-        const trader2Id = parts[3];
+        const traderId = parts[3];
 
-        return sendMMSummary(interaction, {
-          size,
-          trader2Id,
-          gives1: interaction.fields.getTextInputValue("gives1"),
-          gives2: interaction.fields.getTextInputValue("gives2")
+        const trader1Gives =
+          interaction.fields.getTextInputValue("gives1");
+
+        const trader2Gives =
+          interaction.fields.getTextInputValue("gives2");
+
+        const tier = mmRoleForSize(size);
+
+        editDatabase(database => {
+          database.mmTickets[interaction.channel.id] = {
+            size,
+            trader1Id: interaction.user.id,
+            trader2Id: traderId,
+            trader1Gives,
+            trader2Gives,
+            requiredRoleId: tier.roleId,
+            requiredRoleName: tier.roleName,
+            claimedBy: null,
+            claimedAt: null,
+            feeItems: null,
+            feePayer: null,
+            status: "waiting_for_mm",
+            createdAt: Date.now()
+          };
         });
-      }
-
-      if (interaction.customId === "mm_payment_modal") {
-        const claim = getClaim(interaction.channel.id);
-
-        if (!claim) {
-          return interaction.reply({
-            content: "⚠️ This MM ticket has not been claimed yet.",
-            ephemeral: true
-          });
-        }
-
-        if (claim.userId !== interaction.user.id && !isOwner(interaction.user.id)) {
-          return interaction.reply({
-            content: `⚠️ Only the claimed MM can set payment needed. Claimed MM: <@${claim.userId}>`,
-            ephemeral: true
-          });
-        }
-
-        const amountRaw = interaction.fields.getTextInputValue("amount");
-        const reason = interaction.fields.getTextInputValue("reason") || "MM payment/fee needed";
-        const amount = Number(amountRaw);
-
-        if (isNaN(amount) || amount <= 0) {
-          return interaction.reply({
-            content: "❌ Invalid payment amount.",
-            ephemeral: true
-          });
-        }
 
         const embed = premiumEmbed(
-          "💵 MM Payment Needed",
-          [
-            `Claimed MM: <@${claim.userId}>`,
-            `Amount Needed: **${money(amount)}**`,
-            "",
-            `Note: ${reason}`,
-            "",
-            "Both traders should confirm payment before the trade continues."
-          ].join("\n"),
-          0xf1c40f
+          "🛡️ Middleman Request",
+          "A middleman must claim this ticket.",
+          0x5865f2
+        ).addFields(
+          {
+            name: "👤 Trader 1",
+            value: `<@${interaction.user.id}>`,
+            inline: true
+          },
+          {
+            name: "👤 Trader 2",
+            value: `<@${traderId}>`,
+            inline: true
+          },
+          {
+            name: "📦 Trader 1 Gives",
+            value: trader1Gives,
+            inline: false
+          },
+          {
+            name: "📦 Trader 2 Gives",
+            value: trader2Gives,
+            inline: false
+          },
+          {
+            name: "🛡️ Required Tier",
+            value: tier.roleName,
+            inline: true
+          },
+          {
+            name: "🎁 MM Fee",
+            value: "Not set — in-game items only",
+            inline: true
+          },
+          {
+            name: "📌 Status",
+            value: "🟡 Waiting for MM",
+            inline: false
+          }
         );
 
+        await interaction.channel.send({
+          content: `<@&${tier.roleId}> New MM request!`,
+          embeds: [embed],
+          components: [mmActionButtons()]
+        });
+
+        return interaction.reply(
+          ephemeral("✅ MM request created.")
+        );
+      }
+
+      if (customId === "mm_fee_modal") {
+        const ticket = db.mmTickets[interaction.channel.id];
+
+        if (!ticket?.claimedBy) {
+          return interaction.reply(
+            ephemeral("❌ This ticket has not been claimed.")
+          );
+        }
+
+        if (
+          !isOwner(interaction.user.id) &&
+          ticket.claimedBy !== interaction.user.id
+        ) {
+          return interaction.reply(
+            ephemeral("❌ Only the claimed MM can set the fee.")
+          );
+        }
+
+        const feeItems =
+          interaction.fields.getTextInputValue("items");
+
+        const feePayer =
+          interaction.fields.getTextInputValue("payer");
+
+        editDatabase(database => {
+          database.mmTickets[interaction.channel.id].feeItems =
+            feeItems;
+
+          database.mmTickets[interaction.channel.id].feePayer =
+            feePayer;
+        });
+
         return interaction.reply({
-          content: `💵 MM payment needed. Claimed MM: <@${claim.userId}>`,
-          embeds: [embed]
+          embeds: [
+            premiumEmbed(
+              "🎁 MM Item Fee Required",
+              [
+                `**Items:** ${feeItems}`,
+                `**Paid by:** ${feePayer}`,
+                "",
+                "No real-money MM fee is allowed."
+              ].join("\n"),
+              0xf1c40f
+            )
+          ]
         });
       }
 
-      if (interaction.customId === "mm_apply_part1") {
-        applications.set(interaction.user.id, {
-          type: "mm",
-          vouches: interaction.fields.getTextInputValue("vouches"),
-          timezone: interaction.fields.getTextInputValue("timezone"),
-          activity: interaction.fields.getTextInputValue("activity"),
-          server_time: interaction.fields.getTextInputValue("server_time"),
-          active_needed: interaction.fields.getTextInputValue("active_needed")
+      if (customId === "vouch_modal_shop") {
+        return submitVouch(interaction, "shop");
+      }
+
+      if (customId === "vouch_modal_mm") {
+        return submitVouch(interaction, "mm");
+      }
+
+      if (customId === "owner_discount_create") {
+        if (!isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral("👑 Only the owner can do this.")
+          );
+        }
+
+        const code =
+          interaction.fields.getTextInputValue("code");
+
+        const typeRaw =
+          interaction.fields
+            .getTextInputValue("type")
+            .toLowerCase();
+
+        const type =
+          typeRaw.includes("percent") ||
+          typeRaw.includes("%")
+            ? "percent"
+            : "dollar";
+
+        const amount = Number(
+          interaction.fields.getTextInputValue("amount")
+        );
+
+        const maxUses = safeWholeNumber(
+          interaction.fields.getTextInputValue("uses")
+        );
+
+        const perUserLimit = safeWholeNumber(
+          interaction.fields.getTextInputValue("peruser")
+        );
+
+        if (
+          !Number.isFinite(amount) ||
+          amount <= 0 ||
+          !maxUses ||
+          !perUserLimit
+        ) {
+          return interaction.reply(
+            ephemeral("❌ Invalid discount values.")
+          );
+        }
+
+        const created = createDiscountCode({
+          code,
+          type,
+          amount,
+          maxUses,
+          perUserLimit,
+          createdBy: interaction.user.id
+        });
+
+        return interaction.reply(
+          ephemeral(
+            [
+              `✅ Created **${created.code}**`,
+              `Type: **${created.type}**`,
+              `Value: **${
+                created.type === "percent"
+                  ? `${created.amount}%`
+                  : money(created.amount)
+              }**`,
+              `Total uses: **${created.maxUses}**`,
+              `Uses per user: **${created.perUserLimit}**`
+            ].join("\n")
+          )
+        );
+      }
+
+      if (customId === "mm_apply_part1") {
+        editDatabase(database => {
+          database.applications[interaction.user.id] = {
+            type: "mm",
+            vouches:
+              interaction.fields.getTextInputValue("vouches"),
+            timezone:
+              interaction.fields.getTextInputValue("timezone"),
+            activity:
+              interaction.fields.getTextInputValue("activity"),
+            server_time:
+              interaction.fields.getTextInputValue(
+                "server_time"
+              ),
+            available:
+              interaction.fields.getTextInputValue("available")
+          };
         });
 
         const row = new ActionRowBuilder().addComponents(
@@ -1928,42 +2779,55 @@ client.on("interactionCreate", async interaction => {
         );
 
         return interaction.reply({
-          content: "✅ Part 1 saved. Click below to continue.",
+          content: "✅ Part 1 saved.",
           components: [row],
           ephemeral: true
         });
       }
 
-      if (interaction.customId === "mm_apply_part2") {
-        const part1 = applications.get(interaction.user.id);
+      if (customId === "mm_apply_part2") {
+        const part1 = db.applications[interaction.user.id];
 
-        if (!part1) {
-          return interaction.reply({
-            content: "❌ Please start the application again.",
-            ephemeral: true
-          });
+        if (!part1 || part1.type !== "mm") {
+          return interaction.reply(
+            ephemeral("❌ Start the application again.")
+          );
         }
 
-        const fullData = {
+        const data = {
           ...part1,
-          experience: interaction.fields.getTextInputValue("experience"),
-          why_mm: interaction.fields.getTextInputValue("why_mm"),
-          why_choose: interaction.fields.getTextInputValue("why_choose")
+          experience:
+            interaction.fields.getTextInputValue("experience"),
+          why:
+            interaction.fields.getTextInputValue("why"),
+          choose:
+            interaction.fields.getTextInputValue("choose")
         };
 
-        applications.delete(interaction.user.id);
+        editDatabase(database => {
+          delete database.applications[interaction.user.id];
+        });
 
-        return sendApplication(interaction, "mm", fullData);
+        return sendApplication(interaction, "mm", data);
       }
 
-      if (interaction.customId === "admin_apply_part1") {
-        applications.set(interaction.user.id, {
-          type: "admin",
-          age: interaction.fields.getTextInputValue("age"),
-          timezone: interaction.fields.getTextInputValue("timezone"),
-          activity: interaction.fields.getTextInputValue("activity"),
-          server_time: interaction.fields.getTextInputValue("server_time"),
-          staff_exp: interaction.fields.getTextInputValue("staff_exp")
+      if (customId === "admin_apply_part1") {
+        editDatabase(database => {
+          database.applications[interaction.user.id] = {
+            type: "admin",
+            age:
+              interaction.fields.getTextInputValue("age"),
+            timezone:
+              interaction.fields.getTextInputValue("timezone"),
+            activity:
+              interaction.fields.getTextInputValue("activity"),
+            server_time:
+              interaction.fields.getTextInputValue(
+                "server_time"
+              ),
+            experience:
+              interaction.fields.getTextInputValue("experience")
+          };
         });
 
         const row = new ActionRowBuilder().addComponents(
@@ -1975,66 +2839,61 @@ client.on("interactionCreate", async interaction => {
         );
 
         return interaction.reply({
-          content: "✅ Part 1 saved. Click below to continue.",
+          content: "✅ Part 1 saved.",
           components: [row],
           ephemeral: true
         });
       }
 
-      if (interaction.customId === "admin_apply_part2") {
-        const part1 = applications.get(interaction.user.id);
+      if (customId === "admin_apply_part2") {
+        const part1 = db.applications[interaction.user.id];
 
-        if (!part1) {
-          return interaction.reply({
-            content: "❌ Please start the application again.",
-            ephemeral: true
-          });
+        if (!part1 || part1.type !== "admin") {
+          return interaction.reply(
+            ephemeral("❌ Start the application again.")
+          );
         }
 
-        const fullData = {
+        const data = {
           ...part1,
-          rule_breaker: interaction.fields.getTextInputValue("rule_breaker"),
-          staff_abuse: interaction.fields.getTextInputValue("staff_abuse"),
-          why_admin: interaction.fields.getTextInputValue("why_admin"),
-          why_choose: interaction.fields.getTextInputValue("why_choose")
+          rule:
+            interaction.fields.getTextInputValue("rule"),
+          abuse:
+            interaction.fields.getTextInputValue("abuse"),
+          why:
+            interaction.fields.getTextInputValue("why"),
+          choose:
+            interaction.fields.getTextInputValue("choose")
         };
 
-        applications.delete(interaction.user.id);
+        editDatabase(database => {
+          delete database.applications[interaction.user.id];
+        });
 
-        return sendApplication(interaction, "admin", fullData);
-      }
-
-      if (interaction.customId === "vouch_modal_shop") {
-        return sendVouch(interaction, "shop");
-      }
-
-      if (interaction.customId === "vouch_modal_mm") {
-        return sendVouch(interaction, "mm");
+        return sendApplication(interaction, "admin", data);
       }
     }
-  } catch (err) {
-    console.log(err);
+  } catch (error) {
+    console.error("Interaction error:", error);
 
     if (!interaction.replied && !interaction.deferred) {
-      return interaction.reply({
-        content: "❌ Something went wrong. Please tell staff.",
-        ephemeral: true
-      });
+      await interaction.reply(
+        ephemeral("❌ Something went wrong. Please tell the owner.")
+      );
     }
   }
 });
 
-// =======================
+// ======================================================
 // AUTO PANELS
-// =======================
-
-client.on("channelCreate", async channel => {
+// ======================================================
+client.on("channelCreate", channel => {
   setTimeout(async () => {
     try {
-      if (!channel || !channel.isTextBased()) return;
+      if (!channel?.isTextBased()) return;
 
       if (isBuyerTicket(channel)) {
-        await channel.send(buyerPanel());
+        await channel.send(shopPanel());
       }
 
       if (isMMTicket(channel)) {
@@ -2044,19 +2903,23 @@ client.on("channelCreate", async channel => {
       if (isApplicationTicket(channel)) {
         await channel.send(applicationPanel());
       }
-    } catch (err) {
-      console.log("Auto panel error:", err.message);
+    } catch (error) {
+      console.error("Auto panel error:", error);
     }
   }, 2500);
 });
 
-// =======================
+// ======================================================
 // READY / START
-// =======================
-
+// ======================================================
 client.once("clientReady", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`👑 Owner override ID: ${OWNER_ID}`);
 });
 
-registerCommands();
-client.login(TOKEN);
+registerCommands()
+  .then(() => client.login(TOKEN))
+  .catch(error => {
+    console.error("Startup error:", error);
+    process.exit(1);
+  });
