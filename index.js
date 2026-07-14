@@ -49,6 +49,8 @@ const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const PAYPAL_EMAIL = process.env.PAYPAL_EMAIL || "Ask the owner for the PayPal email.";
+const SCAM_REPORT_CHANNEL_ID = process.env.SCAM_REPORT_CHANNEL_ID || "";
+const SECURITY_LOG_CHANNEL_ID = process.env.SECURITY_LOG_CHANNEL_ID || "";
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error("❌ Missing TOKEN, CLIENT_ID, or GUILD_ID in .env");
@@ -99,7 +101,12 @@ function defaultDatabase() {
     orders: {},
     mmTickets: {},
     applications: {},
+    applicationSettings: { open: true },
     vouchedTickets: [],
+    warnings: {},
+    blacklist: {},
+    scamReports: [],
+    orderHistory: {},
     orderCounter: 1000
   };
 }
@@ -230,6 +237,38 @@ function isAnyMM(interaction) {
 
 function isReviewer(interaction) {
   return isOwner(interaction.user.id) || hasRole(interaction, REVIEW_ROLE_ID);
+}
+
+function canModerate(interaction) {
+  return (
+    isOwner(interaction.user.id) ||
+    interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers) ||
+    interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)
+  );
+}
+
+function canBan(interaction) {
+  return (
+    isOwner(interaction.user.id) ||
+    interaction.memberPermissions?.has(PermissionFlagsBits.BanMembers)
+  );
+}
+
+function canKick(interaction) {
+  return (
+    isOwner(interaction.user.id) ||
+    interaction.memberPermissions?.has(PermissionFlagsBits.KickMembers)
+  );
+}
+
+function applicationIsOpen() {
+  return db.applicationSettings?.open !== false;
+}
+
+async function sendSecurityLog(embed) {
+  if (!SECURITY_LOG_CHANNEL_ID) return;
+  const channel = await client.channels.fetch(SECURITY_LOG_CHANNEL_ID).catch(() => null);
+  if (channel) await channel.send({ embeds: [embed] }).catch(() => {});
 }
 
 function isBuyerTicket(channel) {
@@ -956,6 +995,15 @@ function mmDetailsModal(size, traderId) {
         .setLabel("What is the OTHER trader giving?")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
+    ),
+
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("trade_value")
+        .setLabel("Trade value in USD")
+        .setPlaceholder("Example: 10")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
     )
   );
 
@@ -984,22 +1032,36 @@ function mmRoleForSize(size) {
 }
 
 function mmActionButtons() {
-  return new ActionRowBuilder().addComponents(
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("mm_confirm_trader1")
+      .setLabel("Trader 1 Confirm")
+      .setEmoji("1️⃣")
+      .setStyle(ButtonStyle.Success),
+
+    new ButtonBuilder()
+      .setCustomId("mm_confirm_trader2")
+      .setLabel("Trader 2 Confirm")
+      .setEmoji("2️⃣")
+      .setStyle(ButtonStyle.Success),
+
     new ButtonBuilder()
       .setCustomId("mm_claim")
       .setLabel("Claim MM")
       .setEmoji("🛡️")
-      .setStyle(ButtonStyle.Primary),
+      .setStyle(ButtonStyle.Primary)
+  );
 
+  const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("mm_fee")
-      .setLabel("Set Item Fee")
+      .setLabel("Set Fee Items")
       .setEmoji("🎁")
       .setStyle(ButtonStyle.Secondary),
 
     new ButtonBuilder()
-      .setCustomId("mm_confirmed")
-      .setLabel("Both Confirmed")
+      .setCustomId("mm_fee_paid")
+      .setLabel("Fee Received")
       .setEmoji("✅")
       .setStyle(ButtonStyle.Success),
 
@@ -1015,6 +1077,8 @@ function mmActionButtons() {
       .setEmoji("❌")
       .setStyle(ButtonStyle.Danger)
   );
+
+  return [row1, row2];
 }
 
 function mmFeeModal() {
@@ -1663,6 +1727,90 @@ function discountCreateModal() {
   return modal;
 }
 
+
+// ======================================================
+// SECURITY, SCAM REPORTS, WARNINGS, AND USEFUL COMMANDS
+// ======================================================
+function userWarnings(userId) {
+  return db.warnings[userId] || [];
+}
+
+function addWarning(userId, moderatorId, reason) {
+  editDatabase(database => {
+    if (!database.warnings[userId]) database.warnings[userId] = [];
+    database.warnings[userId].push({
+      moderatorId,
+      reason,
+      createdAt: Date.now()
+    });
+  });
+}
+
+function clearWarnings(userId) {
+  editDatabase(database => {
+    database.warnings[userId] = [];
+  });
+}
+
+function blacklistUser(userId, moderatorId, reason) {
+  editDatabase(database => {
+    database.blacklist[userId] = {
+      moderatorId,
+      reason,
+      createdAt: Date.now()
+    };
+  });
+}
+
+function unblacklistUser(userId) {
+  editDatabase(database => {
+    delete database.blacklist[userId];
+  });
+}
+
+function pricesEmbed(category) {
+  const entries = Object.entries(priceList[category]);
+  const lines = entries.map(([name, price]) => `• **${name}** — ${money(price)}`);
+  const chunks = [];
+  while (lines.length) chunks.push(lines.splice(0, 20).join("\\n"));
+
+  const embed = premiumEmbed(
+    category === "seeds" ? "🌱 Seed Prices" : "🐾 Pet Prices",
+    chunks.shift() || "No prices found.",
+    category === "seeds" ? 0x2ecc71 : 0x5865f2
+  );
+
+  chunks.forEach((chunk, index) => {
+    embed.addFields({ name: `More ${category} ${index + 1}`, value: chunk });
+  });
+
+  return embed;
+}
+
+function helpEmbed() {
+  return premiumEmbed(
+    "📘 Bloom Bot Help",
+    [
+      "**Buying**",
+      "1. Open a purchase ticket.",
+      "2. Press **Add Seed** or **Add Pet**.",
+      "3. Choose an item and quantity.",
+      "4. Press **Checkout**.",
+      "",
+      "**Middleman**",
+      "1. Open an MM ticket.",
+      "2. Add the other trader.",
+      "3. Enter the trade and its value.",
+      "4. Both traders must confirm.",
+      "5. An MM claims it and checks the fee.",
+      "",
+      "**Useful commands**",
+      "`/prices` `/cart` `/orderstatus` `/mmstatus` `/history` `/scammercheck` `/reportscammer`"
+    ].join("\\n"),
+    0x3498db
+  );
+}
+
 // ======================================================
 // SLASH COMMANDS
 // ======================================================
@@ -1780,6 +1928,110 @@ const commands = [
         )
     ),
 
+
+  new SlashCommandBuilder()
+    .setName("shop")
+    .setDescription("Show the shop panel"),
+
+  new SlashCommandBuilder()
+    .setName("cart")
+    .setDescription("Show your current cart"),
+
+  new SlashCommandBuilder()
+    .setName("prices")
+    .setDescription("Show seed or pet prices")
+    .addStringOption(option =>
+      option.setName("category").setDescription("Choose a category").setRequired(true)
+        .addChoices(
+          { name: "Seeds", value: "seeds" },
+          { name: "Pets", value: "pets" }
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("Show simple bot instructions"),
+
+  new SlashCommandBuilder()
+    .setName("orderstatus")
+    .setDescription("Show this ticket's order status"),
+
+  new SlashCommandBuilder()
+    .setName("mmstatus")
+    .setDescription("Show this ticket's MM status"),
+
+  new SlashCommandBuilder()
+    .setName("history")
+    .setDescription("Show your completed order history"),
+
+  new SlashCommandBuilder()
+    .setName("reportscammer")
+    .setDescription("Report a possible scammer with proof")
+    .addUserOption(option => option.setName("user").setDescription("User being reported").setRequired(true))
+    .addStringOption(option => option.setName("reason").setDescription("What happened?").setRequired(true))
+    .addStringOption(option => option.setName("proof").setDescription("Proof link or message link").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("scammercheck")
+    .setDescription("Check warnings and blacklist status")
+    .addUserOption(option => option.setName("user").setDescription("User to check").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("blacklist")
+    .setDescription("Owner only: manage the scammer blacklist")
+    .addSubcommand(sub => sub.setName("add").setDescription("Add a user")
+      .addUserOption(option => option.setName("user").setDescription("User").setRequired(true))
+      .addStringOption(option => option.setName("reason").setDescription("Reason").setRequired(true)))
+    .addSubcommand(sub => sub.setName("remove").setDescription("Remove a user")
+      .addUserOption(option => option.setName("user").setDescription("User").setRequired(true)))
+    .addSubcommand(sub => sub.setName("list").setDescription("List blacklisted users")),
+
+  new SlashCommandBuilder()
+    .setName("warn")
+    .setDescription("Moderation warning commands")
+    .addSubcommand(sub => sub.setName("add").setDescription("Warn a user")
+      .addUserOption(option => option.setName("user").setDescription("User").setRequired(true))
+      .addStringOption(option => option.setName("reason").setDescription("Reason").setRequired(true)))
+    .addSubcommand(sub => sub.setName("list").setDescription("View warnings")
+      .addUserOption(option => option.setName("user").setDescription("User").setRequired(true)))
+    .addSubcommand(sub => sub.setName("clear").setDescription("Clear warnings")
+      .addUserOption(option => option.setName("user").setDescription("User").setRequired(true))),
+
+  new SlashCommandBuilder()
+    .setName("timeout")
+    .setDescription("Timeout a user")
+    .addUserOption(option => option.setName("user").setDescription("User").setRequired(true))
+    .addIntegerOption(option => option.setName("minutes").setDescription("Minutes").setRequired(true).setMinValue(1).setMaxValue(40320))
+    .addStringOption(option => option.setName("reason").setDescription("Reason").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("kick")
+    .setDescription("Kick a user")
+    .addUserOption(option => option.setName("user").setDescription("User").setRequired(true))
+    .addStringOption(option => option.setName("reason").setDescription("Reason").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("ban")
+    .setDescription("Ban a user")
+    .addUserOption(option => option.setName("user").setDescription("User").setRequired(true))
+    .addStringOption(option => option.setName("reason").setDescription("Reason").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("lockdown")
+    .setDescription("Owner only: lock or unlock the current channel")
+    .addStringOption(option => option.setName("mode").setDescription("Mode").setRequired(true)
+      .addChoices({ name: "Lock", value: "lock" }, { name: "Unlock", value: "unlock" })),
+
+  new SlashCommandBuilder()
+    .setName("applications")
+    .setDescription("Owner only: open, close, or check applications")
+    .addStringOption(option => option.setName("mode").setDescription("Mode").setRequired(true)
+      .addChoices(
+        { name: "Open", value: "open" },
+        { name: "Close", value: "close" },
+        { name: "Status", value: "status" }
+      )),
+
   new SlashCommandBuilder()
     .setName("owner")
     .setDescription("Owner override commands")
@@ -1841,6 +2093,224 @@ client.on("interactionCreate", async interaction => {
         return interaction.reply(
           ephemeral(`🏓 Pong! ${client.ws.ping}ms`)
         );
+      }
+
+      if (commandName === "shop") {
+        return interaction.reply(shopPanel());
+      }
+
+      if (commandName === "cart") {
+        return interaction.reply({
+          embeds: [buildCartEmbed(interaction.user.id)],
+          components: [cartButtons()],
+          ephemeral: true
+        });
+      }
+
+      if (commandName === "prices") {
+        const category = interaction.options.getString("category");
+        return interaction.reply({ embeds: [pricesEmbed(category)], ephemeral: true });
+      }
+
+      if (commandName === "help") {
+        return interaction.reply({ embeds: [helpEmbed()], ephemeral: true });
+      }
+
+      if (commandName === "orderstatus") {
+        const order = db.orders[interaction.channel.id];
+        if (!order) return interaction.reply(ephemeral("❌ No order exists in this ticket."));
+        return interaction.reply({
+          embeds: [premiumEmbed(
+            `🧾 Order #${order.orderId}`,
+            `**Status:** ${order.status}\\n**Buyer:** <@${order.buyerId}>\\n**Total:** ${money(order.finalTotal)}`
+          )],
+          ephemeral: true
+        });
+      }
+
+      if (commandName === "mmstatus") {
+        const ticket = db.mmTickets[interaction.channel.id];
+        if (!ticket) return interaction.reply(ephemeral("❌ No MM request exists here."));
+        return interaction.reply({
+          embeds: [premiumEmbed(
+            "🛡️ MM Status",
+            [
+              `Trader 1: <@${ticket.trader1Id}> ${ticket.trader1Confirmed ? "✅" : "⏳"}`,
+              `Trader 2: <@${ticket.trader2Id}> ${ticket.trader2Confirmed ? "✅" : "⏳"}`,
+              `Trade value: ${money(ticket.tradeValue)}`,
+              `Fee: ${ticket.feePercent}% = ${money(ticket.feeAmount)} in items`,
+              `Fee received: ${ticket.feePaid ? "✅" : "⏳"}`,
+              `Claimed MM: ${ticket.claimedBy ? `<@${ticket.claimedBy}>` : "Not claimed"}`,
+              `Status: ${ticket.status}`
+            ].join("\\n")
+          )],
+          ephemeral: true
+        });
+      }
+
+      if (commandName === "history") {
+        const history = db.orderHistory[interaction.user.id] || [];
+        const text = history.length
+          ? history.slice(-10).reverse().map(order => `• **#${order.orderId}** — ${money(order.finalTotal)} — ${order.completedAt ? `<t:${Math.floor(order.completedAt / 1000)}:R>` : "Completed"}`).join("\\n")
+          : "You have no completed orders yet.";
+        return interaction.reply({ embeds: [premiumEmbed("📦 Your Order History", text)], ephemeral: true });
+      }
+
+      if (commandName === "reportscammer") {
+        const user = interaction.options.getUser("user");
+        const reason = interaction.options.getString("reason");
+        const proof = interaction.options.getString("proof");
+
+        const report = {
+          reporterId: interaction.user.id,
+          reportedId: user.id,
+          reason,
+          proof,
+          createdAt: Date.now()
+        };
+
+        editDatabase(database => database.scamReports.push(report));
+
+        const embed = premiumEmbed(
+          "🚨 New Scammer Report",
+          `A report was submitted for staff review.`,
+          0xe74c3c
+        ).addFields(
+          { name: "Reported User", value: `${user}\\n${user.tag}`, inline: true },
+          { name: "Reporter", value: `${interaction.user}`, inline: true },
+          { name: "Reason", value: reason, inline: false },
+          { name: "Proof", value: proof, inline: false }
+        );
+
+        if (SCAM_REPORT_CHANNEL_ID) {
+          const channel = await client.channels.fetch(SCAM_REPORT_CHANNEL_ID).catch(() => null);
+          if (channel) await channel.send({ content: `<@&${REVIEW_ROLE_ID}>`, embeds: [embed] });
+        } else {
+          await interaction.channel.send({ embeds: [embed] });
+        }
+
+        return interaction.reply(ephemeral("✅ Report sent to staff. Do not harass the reported user while staff reviews it."));
+      }
+
+      if (commandName === "scammercheck") {
+        const user = interaction.options.getUser("user");
+        const warnings = userWarnings(user.id);
+        const blacklist = db.blacklist[user.id];
+        return interaction.reply({
+          embeds: [premiumEmbed(
+            "🔎 Security Check",
+            [
+              `User: ${user}`,
+              `Blacklisted: ${blacklist ? "🚫 Yes" : "✅ No"}`,
+              blacklist ? `Blacklist reason: ${blacklist.reason}` : "",
+              `Warnings: ${warnings.length}`,
+              "A new account or report is not proof of scamming. Staff should always review evidence."
+            ].filter(Boolean).join("\\n"),
+            blacklist ? 0xe74c3c : 0x2ecc71
+          )],
+          ephemeral: true
+        });
+      }
+
+      if (commandName === "blacklist") {
+        if (!isOwner(interaction.user.id)) return interaction.reply(ephemeral("👑 Owner only."));
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === "list") {
+          const entries = Object.entries(db.blacklist);
+          const list = entries.length
+            ? entries.map(([id, data]) => `• <@${id}> — ${data.reason}`).join("\\n")
+            : "No users are blacklisted.";
+          return interaction.reply({ embeds: [premiumEmbed("🚫 Blacklist", list, 0xe74c3c)], ephemeral: true });
+        }
+
+        const user = interaction.options.getUser("user");
+
+        if (sub === "remove") {
+          unblacklistUser(user.id);
+          return interaction.reply(ephemeral(`✅ Removed ${user} from the blacklist.`));
+        }
+
+        const reason = interaction.options.getString("reason");
+        blacklistUser(user.id, interaction.user.id, reason);
+        await sendSecurityLog(premiumEmbed("🚫 User Blacklisted", `${user}\\nReason: ${reason}`, 0xe74c3c));
+        return interaction.reply(ephemeral(`✅ Blacklisted ${user}.`));
+      }
+
+      if (commandName === "warn") {
+        if (!canModerate(interaction)) return interaction.reply(ephemeral("❌ Moderators only."));
+        const sub = interaction.options.getSubcommand();
+        const user = interaction.options.getUser("user");
+
+        if (sub === "list") {
+          const warnings = userWarnings(user.id);
+          const list = warnings.length
+            ? warnings.map((warning, index) => `**${index + 1}.** ${warning.reason} — <@${warning.moderatorId}>`).join("\\n")
+            : "No warnings.";
+          return interaction.reply({ embeds: [premiumEmbed(`⚠️ Warnings for ${user.username}`, list, 0xf1c40f)], ephemeral: true });
+        }
+
+        if (sub === "clear") {
+          clearWarnings(user.id);
+          return interaction.reply(ephemeral(`✅ Cleared warnings for ${user}.`));
+        }
+
+        const reason = interaction.options.getString("reason");
+        addWarning(user.id, interaction.user.id, reason);
+        return interaction.reply(`⚠️ ${user} was warned. Reason: **${reason}**`);
+      }
+
+      if (commandName === "timeout") {
+        if (!canModerate(interaction)) return interaction.reply(ephemeral("❌ Moderators only."));
+        const user = interaction.options.getUser("user");
+        const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+        const minutes = interaction.options.getInteger("minutes");
+        const reason = interaction.options.getString("reason");
+        if (!member) return interaction.reply(ephemeral("❌ Member not found."));
+        await member.timeout(minutes * 60_000, reason);
+        await sendSecurityLog(premiumEmbed("⏳ User Timed Out", `${user}\\n${minutes} minutes\\nReason: ${reason}`, 0xf1c40f));
+        return interaction.reply(`⏳ ${user} was timed out for **${minutes} minutes**.`);
+      }
+
+      if (commandName === "kick") {
+        if (!canKick(interaction)) return interaction.reply(ephemeral("❌ Kick permission required."));
+        const user = interaction.options.getUser("user");
+        const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+        const reason = interaction.options.getString("reason");
+        if (!member?.kickable) return interaction.reply(ephemeral("❌ I cannot kick this user."));
+        await member.kick(reason);
+        await sendSecurityLog(premiumEmbed("👢 User Kicked", `${user}\\nReason: ${reason}`, 0xe67e22));
+        return interaction.reply(`👢 ${user.tag} was kicked.`);
+      }
+
+      if (commandName === "ban") {
+        if (!canBan(interaction)) return interaction.reply(ephemeral("❌ Ban permission required."));
+        const user = interaction.options.getUser("user");
+        const reason = interaction.options.getString("reason");
+        await interaction.guild.members.ban(user.id, { reason });
+        await sendSecurityLog(premiumEmbed("🔨 User Banned", `${user}\\nReason: ${reason}`, 0xe74c3c));
+        return interaction.reply(`🔨 ${user.tag} was banned.`);
+      }
+
+      if (commandName === "lockdown") {
+        if (!isOwner(interaction.user.id)) return interaction.reply(ephemeral("👑 Owner only."));
+        const mode = interaction.options.getString("mode");
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+          SendMessages: mode === "unlock" ? null : false
+        });
+        return interaction.reply(mode === "lock" ? "🔒 Channel locked." : "🔓 Channel unlocked.");
+      }
+
+      if (commandName === "applications") {
+        if (!isOwner(interaction.user.id)) return interaction.reply(ephemeral("👑 Owner only."));
+        const mode = interaction.options.getString("mode");
+        if (mode === "status") {
+          return interaction.reply(ephemeral(`Applications are currently **${applicationIsOpen() ? "OPEN" : "CLOSED"}**.`));
+        }
+        editDatabase(database => {
+          database.applicationSettings.open = mode === "open";
+        });
+        return interaction.reply(`📝 Applications are now **${mode.toUpperCase()}**.`);
       }
 
       if (commandName === "panel") {
@@ -2206,9 +2676,16 @@ client.on("interactionCreate", async interaction => {
         }
 
         editDatabase(database => {
-          if (database.orders[interaction.channel.id]) {
-            database.orders[interaction.channel.id].status =
-              "delivered_waiting_vouch";
+          const order = database.orders[interaction.channel.id];
+          if (order) {
+            order.status = "delivered_waiting_vouch";
+            if (!database.orderHistory[order.buyerId]) database.orderHistory[order.buyerId] = [];
+            if (!database.orderHistory[order.buyerId].some(item => item.orderId === order.orderId)) {
+              database.orderHistory[order.buyerId].push({
+                ...order,
+                completedAt: Date.now()
+              });
+            }
           }
         });
 
@@ -2241,6 +2718,32 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
+
+      if (customId === "mm_confirm_trader1" || customId === "mm_confirm_trader2") {
+        const ticket = db.mmTickets[interaction.channel.id];
+        if (!ticket) return interaction.reply(ephemeral("❌ No MM request exists here."));
+
+        const isTrader1Button = customId === "mm_confirm_trader1";
+        const requiredUserId = isTrader1Button ? ticket.trader1Id : ticket.trader2Id;
+
+        if (!isOwner(interaction.user.id) && interaction.user.id !== requiredUserId) {
+          return interaction.reply(ephemeral(`❌ Only Trader ${isTrader1Button ? "1" : "2"} can press this button.`));
+        }
+
+        editDatabase(database => {
+          const current = database.mmTickets[interaction.channel.id];
+          if (isTrader1Button) current.trader1Confirmed = true;
+          else current.trader2Confirmed = true;
+          if (current.trader1Confirmed && current.trader2Confirmed) current.status = "both_traders_confirmed";
+        });
+
+        const updated = db.mmTickets[interaction.channel.id];
+        return interaction.reply(
+          `✅ Trader ${isTrader1Button ? "1" : "2"} confirmed.\\n` +
+          `Trader 1: ${updated.trader1Confirmed ? "✅" : "⏳"} | Trader 2: ${updated.trader2Confirmed ? "✅" : "⏳"}`
+        );
+      }
+
       if (customId === "mm_claim") {
         if (!isAnyMM(interaction)) {
           return interaction.reply(
@@ -2253,6 +2756,12 @@ client.on("interactionCreate", async interaction => {
         if (!ticket) {
           return interaction.reply(
             ephemeral("❌ No MM request exists in this ticket.")
+          );
+        }
+
+        if (!ticket.trader1Confirmed || !ticket.trader2Confirmed) {
+          return interaction.reply(
+            ephemeral("⏳ Both traders must confirm the trade before an MM can claim it.")
           );
         }
 
@@ -2297,7 +2806,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (
-        ["mm_fee", "mm_confirmed", "mm_done", "mm_cancel"].includes(
+        ["mm_fee", "mm_fee_paid", "mm_done", "mm_cancel"].includes(
           customId
         )
       ) {
@@ -2330,13 +2839,13 @@ client.on("interactionCreate", async interaction => {
           return interaction.showModal(mmFeeModal());
         }
 
-        if (customId === "mm_confirmed") {
+        if (customId === "mm_fee_paid") {
           editDatabase(database => {
-            database.mmTickets[interaction.channel.id].status =
-              "both_confirmed";
+            database.mmTickets[interaction.channel.id].feePaid = true;
+            database.mmTickets[interaction.channel.id].status = "fee_received";
           });
 
-          return interaction.reply("✅ Both traders confirmed.");
+          return interaction.reply("✅ The claimed MM confirmed that the required in-game item fee was received.");
         }
 
         if (customId === "mm_cancel") {
@@ -2346,6 +2855,12 @@ client.on("interactionCreate", async interaction => {
           });
 
           return interaction.reply("❌ MM request cancelled.");
+        }
+
+        if (!ticket.feePaid && !isOwner(interaction.user.id)) {
+          return interaction.reply(
+            ephemeral("❌ The MM fee must be received before the trade can be completed.")
+          );
         }
 
         editDatabase(database => {
@@ -2377,6 +2892,9 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (customId === "apply_start") {
+        if (!applicationIsOpen() && !isOwner(interaction.user.id)) {
+          return interaction.reply(ephemeral("📝 Applications are currently closed."));
+        }
         return interaction.reply({
           content: "Choose a position:",
           components: [applicationChoiceButtons()],
@@ -2385,10 +2903,18 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (customId === "apply_mm") {
+        const existing = db.applications[interaction.user.id];
+        if (existing?.submittedAt && Date.now() - existing.submittedAt < 7 * 24 * 60 * 60 * 1000) {
+          return interaction.reply(ephemeral("⏳ You can only submit one application every 7 days."));
+        }
         return interaction.showModal(mmApplicationPart1Modal());
       }
 
       if (customId === "apply_admin") {
+        const existing = db.applications[interaction.user.id];
+        if (existing?.submittedAt && Date.now() - existing.submittedAt < 7 * 24 * 60 * 60 * 1000) {
+          return interaction.reply(ephemeral("⏳ You can only submit one application every 7 days."));
+        }
         return interaction.showModal(
           adminApplicationPart1Modal()
         );
@@ -2552,6 +3078,17 @@ client.on("interactionCreate", async interaction => {
         const trader2Gives =
           interaction.fields.getTextInputValue("gives2");
 
+        const tradeValue = Number(
+          interaction.fields.getTextInputValue("trade_value")
+        );
+
+        if (!Number.isFinite(tradeValue) || tradeValue <= 0) {
+          return interaction.reply(ephemeral("❌ Trade value must be a valid number above 0."));
+        }
+
+        const feePercent = size === "small" ? 5 : 20;
+        const feeAmount = tradeValue * (feePercent / 100);
+        const feeDeadline = Date.now() + 10 * 60 * 1000;
         const tier = mmRoleForSize(size);
 
         editDatabase(database => {
@@ -2561,13 +3098,20 @@ client.on("interactionCreate", async interaction => {
             trader2Id: traderId,
             trader1Gives,
             trader2Gives,
+            tradeValue,
+            feePercent,
+            feeAmount,
+            feeDeadline,
+            trader1Confirmed: false,
+            trader2Confirmed: false,
             requiredRoleId: tier.roleId,
             requiredRoleName: tier.roleName,
             claimedBy: null,
             claimedAt: null,
             feeItems: null,
             feePayer: null,
-            status: "waiting_for_mm",
+            feePaid: false,
+            status: "waiting_for_trader_confirmations",
             createdAt: Date.now()
           };
         });
@@ -2598,18 +3142,33 @@ client.on("interactionCreate", async interaction => {
             inline: false
           },
           {
+            name: "💰 Trade Value",
+            value: money(tradeValue),
+            inline: true
+          },
+          {
             name: "🛡️ Required Tier",
             value: tier.roleName,
             inline: true
           },
           {
-            name: "🎁 MM Fee",
-            value: "Not set — in-game items only",
+            name: "🎁 Required MM Fee",
+            value: `**${feePercent}% = ${money(feeAmount)} worth of in-game items**`,
+            inline: false
+          },
+          {
+            name: "✅ Trader Confirmations",
+            value: `Trader 1: ⏳ Waiting\nTrader 2: ⏳ Waiting`,
+            inline: false
+          },
+          {
+            name: "⏳ Fee Deadline",
+            value: `<t:${Math.floor(feeDeadline / 1000)}:R>`,
             inline: true
           },
           {
             name: "📌 Status",
-            value: "🟡 Waiting for MM",
+            value: "🟡 Waiting for both traders to confirm",
             inline: false
           }
         );
@@ -2617,7 +3176,7 @@ client.on("interactionCreate", async interaction => {
         await interaction.channel.send({
           content: `<@&${tier.roleId}> New MM request!`,
           embeds: [embed],
-          components: [mmActionButtons()]
+          components: mmActionButtons()
         });
 
         return interaction.reply(
@@ -2662,6 +3221,7 @@ client.on("interactionCreate", async interaction => {
             premiumEmbed(
               "🎁 MM Item Fee Required",
               [
+                `**Required value:** ${money(ticket.feeAmount)} (${ticket.feePercent}%)`,
                 `**Items:** ${feeItems}`,
                 `**Paid by:** ${feePayer}`,
                 "",
@@ -2805,7 +3365,10 @@ client.on("interactionCreate", async interaction => {
         };
 
         editDatabase(database => {
-          delete database.applications[interaction.user.id];
+          database.applications[interaction.user.id] = {
+            type: "mm",
+            submittedAt: Date.now()
+          };
         });
 
         return sendApplication(interaction, "mm", data);
@@ -2867,7 +3430,10 @@ client.on("interactionCreate", async interaction => {
         };
 
         editDatabase(database => {
-          delete database.applications[interaction.user.id];
+          database.applications[interaction.user.id] = {
+            type: "admin",
+            submittedAt: Date.now()
+          };
         });
 
         return sendApplication(interaction, "admin", data);
@@ -2908,6 +3474,38 @@ client.on("channelCreate", channel => {
     }
   }, 2500);
 });
+
+
+// ======================================================
+// MM FEE DEADLINE WATCH
+// ======================================================
+setInterval(async () => {
+  const now = Date.now();
+
+  for (const [channelId, ticket] of Object.entries(db.mmTickets)) {
+    if (
+      !ticket.feePaid &&
+      ticket.feeDeadline &&
+      now >= ticket.feeDeadline &&
+      !["cancelled", "completed_waiting_vouch", "completed_by_owner", "closed_for_unpaid_fee"].includes(ticket.status)
+    ) {
+      ticket.status = "closed_for_unpaid_fee";
+      saveDatabase();
+
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+
+      if (channel) {
+        await channel.send(
+          "⛔ The required MM fee was not confirmed within 10 minutes. This ticket will close in 10 seconds."
+        ).catch(() => {});
+
+        setTimeout(() => {
+          channel.delete("MM fee was not paid in time").catch(() => {});
+        }, 10_000);
+      }
+    }
+  }
+}, 60_000);
 
 // ======================================================
 // READY / START
