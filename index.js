@@ -984,7 +984,8 @@ function mmDetailsModal(size, traderId) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("gives1")
-        .setLabel("What are YOU giving?")
+        .setLabel("Trader 1 store items")
+        .setPlaceholder("Example: 20 Mega Seed, 3 Unicorn")
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
     ),
@@ -992,22 +993,98 @@ function mmDetailsModal(size, traderId) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId("gives2")
-        .setLabel("What is the OTHER trader giving?")
+        .setLabel("Trader 2 store items")
+        .setPlaceholder("Example: 2 Raccoon, 10 Gold Seed")
         .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-    ),
-
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("trade_value")
-        .setLabel("Trade value in USD")
-        .setPlaceholder("Example: 10")
-        .setStyle(TextInputStyle.Short)
         .setRequired(true)
     )
   );
 
   return modal;
+}
+
+function parseStoreItems(raw) {
+  const entries = String(raw || "")
+    .split(/[\n,;+]+/)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const store = [
+    ...Object.entries(priceList.seeds),
+    ...Object.entries(priceList.pets)
+  ].sort((a, b) => b[0].length - a[0].length);
+
+  const items = [];
+  const unknown = [];
+
+  for (const entry of entries) {
+    const lower = entry.toLowerCase().replace(/[’']/g, "'");
+    const found = store.find(([name]) => {
+      const full = name.toLowerCase().replace(/[’']/g, "'");
+      const noSeed = full.replace(/\s+seed$/, "");
+      return lower.includes(full) || lower.includes(noSeed);
+    });
+
+    if (!found) {
+      unknown.push(entry);
+      continue;
+    }
+
+    const quantityMatch = entry.match(/\d+/);
+    const quantity = quantityMatch ? Number(quantityMatch[0]) : 1;
+
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100000) {
+      unknown.push(entry);
+      continue;
+    }
+
+    const [name, unitPrice] = found;
+    items.push({
+      name,
+      quantity,
+      unitPrice,
+      total: unitPrice * quantity
+    });
+  }
+
+  return {
+    items,
+    unknown,
+    total: items.reduce((sum, item) => sum + item.total, 0)
+  };
+}
+
+function formatParsedItems(items) {
+  return items
+    .map(item => `• **${item.name} ×${item.quantity}** — ${money(item.total)}`)
+    .join("\n");
+}
+
+function mmTierFromValue(value) {
+  if (value >= 25) {
+    return {
+      size: "huge",
+      roleId: TRUSTED_MM_ROLE_ID,
+      roleName: "Trusted MM",
+      feePercent: 20
+    };
+  }
+
+  if (value >= 5) {
+    return {
+      size: "normal",
+      roleId: MM_ROLE_ID,
+      roleName: "MM",
+      feePercent: 20
+    };
+  }
+
+  return {
+    size: "small",
+    roleId: NEW_MM_ROLE_ID,
+    roleName: "New MM",
+    feePercent: 5
+  };
 }
 
 function mmRoleForSize(size) {
@@ -1032,7 +1109,25 @@ function mmRoleForSize(size) {
 }
 
 function mmActionButtons() {
-  const row1 = new ActionRowBuilder().addComponents(
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("mm_claim")
+        .setLabel("Claim MM")
+        .setEmoji("🛡️")
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId("mm_cancel")
+        .setLabel("Cancel")
+        .setEmoji("❌")
+        .setStyle(ButtonStyle.Danger)
+    )
+  ];
+}
+
+function mmConfirmationButtons() {
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("mm_confirm_trader1")
       .setLabel("Trader 1 Confirm")
@@ -1043,16 +1138,12 @@ function mmActionButtons() {
       .setCustomId("mm_confirm_trader2")
       .setLabel("Trader 2 Confirm")
       .setEmoji("2️⃣")
-      .setStyle(ButtonStyle.Success),
-
-    new ButtonBuilder()
-      .setCustomId("mm_claim")
-      .setLabel("Claim MM")
-      .setEmoji("🛡️")
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(ButtonStyle.Success)
   );
+}
 
-  const row2 = new ActionRowBuilder().addComponents(
+function mmControlButtons() {
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("mm_fee")
       .setLabel("Set Fee Items")
@@ -1077,8 +1168,6 @@ function mmActionButtons() {
       .setEmoji("❌")
       .setStyle(ButtonStyle.Danger)
   );
-
-  return [row1, row2];
 }
 
 function mmFeeModal() {
@@ -2759,12 +2848,6 @@ client.on("interactionCreate", async interaction => {
           );
         }
 
-        if (!ticket.trader1Confirmed || !ticket.trader2Confirmed) {
-          return interaction.reply(
-            ephemeral("⏳ Both traders must confirm the trade before an MM can claim it.")
-          );
-        }
-
         const requiredRole = mmRoleForSize(ticket.size);
 
         if (
@@ -2800,8 +2883,50 @@ client.on("interactionCreate", async interaction => {
           };
         });
 
+        const claimedTicket = db.mmTickets[interaction.channel.id];
+
+        await interaction.channel.send({
+          content: `<@${claimedTicket.trader1Id}> <@${claimedTicket.trader2Id}>`,
+          embeds: [
+            premiumEmbed(
+              "✅ FINAL TRADE CHECK",
+              [
+                "# Both traders must confirm",
+                "",
+                "Read the trade carefully.",
+                "Only press your own confirmation button.",
+                "",
+                `**Claimed MM:** <@${interaction.user.id}>`
+              ].join("\n"),
+              0xf1c40f
+            ).addFields(
+              {
+                name: "📦 Trader 1 Gives",
+                value: formatParsedItems(claimedTicket.trader1Items),
+                inline: false
+              },
+              {
+                name: "📦 Trader 2 Gives",
+                value: formatParsedItems(claimedTicket.trader2Items),
+                inline: false
+              },
+              {
+                name: "🎁 MM Fee",
+                value: `${claimedTicket.feePercent}% = **${money(claimedTicket.feeAmount)} worth of in-game items**`,
+                inline: false
+              },
+              {
+                name: "Confirmations",
+                value: "Trader 1: ⏳\nTrader 2: ⏳",
+                inline: false
+              }
+            )
+          ],
+          components: [mmConfirmationButtons()]
+        });
+
         return interaction.reply(
-          `🛡️ MM ticket claimed by ${interaction.user}`
+          `🛡️ MM ticket claimed by ${interaction.user}. Both traders must now confirm.`
         );
       }
 
@@ -3069,35 +3194,62 @@ client.on("interactionCreate", async interaction => {
 
       if (customId.startsWith("mm_details_")) {
         const parts = customId.split("_");
-        const size = parts[2];
+        const chosenSize = parts[2];
         const traderId = parts[3];
 
-        const trader1Gives =
+        const trader1Raw =
           interaction.fields.getTextInputValue("gives1");
 
-        const trader2Gives =
+        const trader2Raw =
           interaction.fields.getTextInputValue("gives2");
 
-        const tradeValue = Number(
-          interaction.fields.getTextInputValue("trade_value")
-        );
+        const trader1Parsed = parseStoreItems(trader1Raw);
+        const trader2Parsed = parseStoreItems(trader2Raw);
 
-        if (!Number.isFinite(tradeValue) || tradeValue <= 0) {
-          return interaction.reply(ephemeral("❌ Trade value must be a valid number above 0."));
+        const unknown = [
+          ...trader1Parsed.unknown,
+          ...trader2Parsed.unknown
+        ];
+
+        if (
+          !trader1Parsed.items.length ||
+          !trader2Parsed.items.length ||
+          unknown.length
+        ) {
+          return interaction.reply(
+            ephemeral(
+              [
+                "❌ I could not understand every item.",
+                "",
+                "Use this format:",
+                "`20 Mega Seed, 3 Unicorn`",
+                unknown.length
+                  ? `Unknown items: ${unknown.join(", ")}`
+                  : ""
+              ].filter(Boolean).join("\\n")
+            )
+          );
         }
 
-        const feePercent = size === "small" ? 5 : 20;
+        const tradeValue = Math.max(
+          trader1Parsed.total,
+          trader2Parsed.total
+        );
+
+        const tier = mmTierFromValue(tradeValue);
+        const feePercent = tier.feePercent;
         const feeAmount = tradeValue * (feePercent / 100);
         const feeDeadline = Date.now() + 10 * 60 * 1000;
-        const tier = mmRoleForSize(size);
 
         editDatabase(database => {
           database.mmTickets[interaction.channel.id] = {
-            size,
+            size: tier.size,
             trader1Id: interaction.user.id,
             trader2Id: traderId,
-            trader1Gives,
-            trader2Gives,
+            trader1Items: trader1Parsed.items,
+            trader2Items: trader2Parsed.items,
+            trader1Value: trader1Parsed.total,
+            trader2Value: trader2Parsed.total,
             tradeValue,
             feePercent,
             feeAmount,
@@ -3111,76 +3263,70 @@ client.on("interactionCreate", async interaction => {
             feeItems: null,
             feePayer: null,
             feePaid: false,
-            status: "waiting_for_trader_confirmations",
+            status: "waiting_for_mm",
             createdAt: Date.now()
           };
         });
 
+        const ticket = db.mmTickets[interaction.channel.id];
+
         const embed = premiumEmbed(
-          "🛡️ Middleman Request",
-          "A middleman must claim this ticket.",
+          "🛡️ MM NEEDED",
+          [
+            "# The bot calculated the trade",
+            "",
+            `**Trade size:** ${ticket.size.toUpperCase()}`,
+            `**Required MM:** ${ticket.requiredRoleName}`,
+            "",
+            "An MM must claim first. After claiming, both traders will confirm the final details."
+          ].join("\\n"),
           0x5865f2
         ).addFields(
           {
             name: "👤 Trader 1",
-            value: `<@${interaction.user.id}>`,
+            value: `<@${ticket.trader1Id}>`,
             inline: true
           },
           {
             name: "👤 Trader 2",
-            value: `<@${traderId}>`,
+            value: `<@${ticket.trader2Id}>`,
             inline: true
           },
           {
             name: "📦 Trader 1 Gives",
-            value: trader1Gives,
+            value: formatParsedItems(ticket.trader1Items),
             inline: false
           },
           {
             name: "📦 Trader 2 Gives",
-            value: trader2Gives,
+            value: formatParsedItems(ticket.trader2Items),
             inline: false
           },
           {
-            name: "💰 Trade Value",
-            value: money(tradeValue),
+            name: "💰 Trader 1 Value",
+            value: money(ticket.trader1Value),
             inline: true
           },
           {
-            name: "🛡️ Required Tier",
-            value: tier.roleName,
+            name: "💰 Trader 2 Value",
+            value: money(ticket.trader2Value),
             inline: true
           },
           {
-            name: "🎁 Required MM Fee",
-            value: `**${feePercent}% = ${money(feeAmount)} worth of in-game items**`,
-            inline: false
-          },
-          {
-            name: "✅ Trader Confirmations",
-            value: `Trader 1: ⏳ Waiting\nTrader 2: ⏳ Waiting`,
-            inline: false
-          },
-          {
-            name: "⏳ Fee Deadline",
-            value: `<t:${Math.floor(feeDeadline / 1000)}:R>`,
-            inline: true
-          },
-          {
-            name: "📌 Status",
-            value: "🟡 Waiting for both traders to confirm",
+            name: "🎁 MM Fee",
+            value: `${ticket.feePercent}% = **${money(ticket.feeAmount)} worth of in-game items**`,
             inline: false
           }
         );
 
         await interaction.channel.send({
-          content: `<@&${tier.roleId}> New MM request!`,
+          content: `<@&${ticket.requiredRoleId}> New MM trade ready to claim!`,
           embeds: [embed],
           components: mmActionButtons()
         });
 
         return interaction.reply(
-          ephemeral("✅ MM request created.")
+          ephemeral("✅ Trade created. The bot calculated the value using the shop prices.")
         );
       }
 
